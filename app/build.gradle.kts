@@ -5,6 +5,17 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+import java.util.Base64
+
+// Shared debug signing key (same keystore as Friday): stored as base64 text so every
+// CI build and every local build is signed the same way — new APKs install over old ones.
+val sharedDebugKeystore: File = layout.buildDirectory.file("shared-debug.keystore").get().asFile.also { f ->
+    if (!f.exists()) {
+        f.parentFile.mkdirs()
+        f.writeBytes(Base64.getMimeDecoder().decode(file("debug.keystore.b64").readText()))
+    }
+}
+
 android {
     namespace = "com.trypod33.kitchlore"
     compileSdk = 34
@@ -21,6 +32,18 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = sharedDebugKeystore
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
