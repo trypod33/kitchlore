@@ -15,14 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Prune old APK artifacts (keep newest 5 once 12 accumulate)
+      - name: Prune old APK artifacts (keep newest 1 once 3 accumulate)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
           REPO="${{ github.repository }}"
-          KEEP=5
-          TRIGGER=12
+          KEEP=1
+          TRIGGER=3
           total=$(gh api "repos/$REPO/actions/artifacts?per_page=100" --jq '.total_count')
           echo "artifact count: $total"
           if [ "$total" -ge "$TRIGGER" ]; then
