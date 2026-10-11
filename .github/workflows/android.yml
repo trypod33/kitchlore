@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prune old APK artifacts (keep newest 5 once 12 accumulate)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          REPO="${{ github.repository }}"
+          KEEP=5
+          TRIGGER=12
+          total=$(gh api "repos/$REPO/actions/artifacts?per_page=100" --jq '.total_count')
+          echo "artifact count: $total"
+          if [ "$total" -ge "$TRIGGER" ]; then
+            ids=$(gh api --paginate "repos/$REPO/actions/artifacts?per_page=100" \
+              --jq '.artifacts[] | [.created_at, (.id|tostring)] | @tsv' \
+              | sort -r | tail -n +$((KEEP+1)) | cut -f2)
+            for id in $ids; do
+              echo "deleting artifact $id"
+              gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+            done
+          fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Tests
+        run: gradle testDebugUnitTest
+      - name: Build debug APK
+        run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kitchlore-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
