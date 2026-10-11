@@ -8,7 +8,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
   android:
@@ -45,6 +45,23 @@ jobs:
         run: gradle testDebugUnitTest
       - name: Build debug APK
         run: gradle assembleDebug
+      - name: Publish APK to daily release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          REPO="${{ github.repository }}"
+          TAG="daily-$(TZ=America/Chicago date +%Y-%m-%d)"
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          ASSET="kitchlore-debug-apk-${{ github.run_number }}.apk"
+          cp "$APK" "/tmp/$ASSET"
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" \
+              --title "Builds for $(TZ=America/Chicago date +%Y-%m-%d)" \
+              --notes "Automated daily archive of CI-built APKs." "/tmp/$ASSET"
+          else
+            gh release upload "$TAG" "/tmp/$ASSET" --repo "$REPO" --clobber
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: kitchlore-debug-apk
