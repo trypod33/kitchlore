@@ -60,6 +60,10 @@ object OcrParser {
         "roll", "cut", "let",
     )
 
+    private val SERVINGS_BEFORE_RE = Regex(
+        "(\\d+)\\s*(?:servings?|serves|portions?)\\b",
+        RegexOption.IGNORE_CASE,
+    )
     private val SERVINGS_RE = Regex(
         "(?:serves|servings?|makes|yield(?:s)?|yields)\\s*:?\\s*(\\d+)",
         RegexOption.IGNORE_CASE,
@@ -73,7 +77,7 @@ object OcrParser {
         RegexOption.IGNORE_CASE,
     )
     private val SECTION_ING_RE = Regex(
-        "^(?:ingredients?|what you'?ll need|you will need)\\s*:?\\s*$",
+        "(?:^(?:ingredients?|what you'?ll need|you will need)\\s*:?\\s*$|.*\\bwill need\\s*:?\\s*$)",
         RegexOption.IGNORE_CASE,
     )
     private val SECTION_STEP_RE = Regex(
@@ -91,20 +95,28 @@ object OcrParser {
         val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ParsedRecipe("(untitled)")
 
-        val servings = SERVINGS_RE.find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+        val servings =
+            SERVINGS_RE.find(text)?.groupValues?.get(1)?.toIntOrNull()
+                ?: SERVINGS_BEFORE_RE.find(text)?.groupValues?.get(1)?.toIntOrNull()
+                ?: 1
         val prep = parseTimeLine(text, PREP_RE)
         val cook = parseTimeLine(text, COOK_RE)
 
         var title: String? = null
         if (blocks.isNotEmpty()) {
             val cand = blocks.maxByOrNull { it.second }?.first?.trim()
-            if (!cand.isNullOrBlank() && cand.length <= 90 && !cand.contains("serves", ignoreCase = true)) {
+            if (!cand.isNullOrBlank() && cand.length <= 90 && !cand.contains("serves", ignoreCase = true) &&
+                !isNoise(cand) && !LEADING_QTY_RE.containsMatchIn(cand) &&
+                    !LEADING_QTY_ALT_RE.containsMatchIn(cand) && !cand.trimEnd().endsWith(":")
+            ) {
                 title = cand
             }
         }
         if (title == null) {
             title = lines.firstOrNull {
-                !SERVINGS_RE.containsMatchIn(it) && !PREP_RE.containsMatchIn(it) && !COOK_RE.containsMatchIn(it)
+                !SERVINGS_RE.containsMatchIn(it) && !PREP_RE.containsMatchIn(it) && !COOK_RE.containsMatchIn(it) &&
+                    !isNoise(it) && !LEADING_QTY_RE.containsMatchIn(it) &&
+                    !LEADING_QTY_ALT_RE.containsMatchIn(it) && !it.trimEnd().endsWith(":")
             }
         }
 
@@ -237,8 +249,37 @@ object OcrParser {
         }
     }
 
-    private fun isNoise(line: String): Boolean =
-        SERVINGS_RE.containsMatchIn(line) || PREP_RE.containsMatchIn(line) || COOK_RE.containsMatchIn(line)
+    private val JUNK_EXACT = setOf(
+        "dessert", "entree", "main dish", "salad", "soup", "appetizer", "bread",
+        "beverage", "breakfast", "side dish", "favorites", "delicious", "tips",
+        "great american recipes", "all rights reserved",
+    )
+    private val JUNK_LINE_RE = Regex(
+        "^(?:dessert|favorites|great american|all rights|www\\.)\\b.*$|" +
+            "(?:card|group)\\s*\\d+\\s*$|" +
+            "preparation time|baking time|cook time|oven temperature|microwave cooking|see other side|" +
+            "^\\d+\\s*servings?\\s*$",
+        RegexOption.IGNORE_CASE,
+    )
+    private val LEADING_QTY_RE = Regex(
+        "^(?:\\d+|\\d+/\\d+|[¼½¾⅓⅔⅛⅜⅝⅞])\\s",
+    )
+    private val LEADING_QTY_ALT_RE = Regex(
+        "^(?:\\d+|[¼½¾⅓⅔⅛⅜⅝⅞])(?:\\s|\\d*[/½¾⅓⅔⅛⅜⅝⅞])",
+    )
+
+    private fun isNoise(line: String): Boolean {
+        if (SERVINGS_RE.containsMatchIn(line) || PREP_RE.containsMatchIn(line) || COOK_RE.containsMatchIn(line)) {
+            return true
+        }
+        if (JUNK_LINE_RE.containsMatchIn(line)) return true
+        val clean = line.trim().trimEnd('.', ' ').trim()
+        if (clean.endsWith(":") && clean.none { it.isDigit() } && clean.length <= 25) return true
+        if (clean.length <= 30 && clean.lowercase() in JUNK_EXACT) return true
+        // Tips/notes prose: ingredient lines never run past ~12 words.
+        if (line.split(Regex("\\s+")).size > 12) return true
+        return false
+    }
 
     private fun looksLikeStep(line: String): Boolean {
         val lower = line.lowercase()
