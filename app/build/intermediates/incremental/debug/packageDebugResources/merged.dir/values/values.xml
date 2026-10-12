@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <color name="kitchlore_background">#FFF8F1</color>
-    <color name="kitchlore_primary">#C9622E</color>
-    <style name="Theme.Kitchlore" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:colorBackground">@color/kitchlore_background</item>
-        <item name="android:statusBarColor">@color/kitchlore_primary</item>
-    </style>
-</resources>

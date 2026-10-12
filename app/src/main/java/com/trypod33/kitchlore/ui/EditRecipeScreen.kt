@@ -46,6 +46,7 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
     var notes by remember { mutableStateOf("") }
     var ingDrafts by remember { mutableStateOf(listOf(DraftIng("", "", ""))) }
     var stepDrafts by remember { mutableStateOf(listOf(DraftStep(""))) }
+    var photoPath by remember { mutableStateOf<String?>(null) }
     var loaded by remember { mutableStateOf(isNew) }
 
     LaunchedEffect(recipeId) {
@@ -53,6 +54,7 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
             val r = db.recipeDao().getRecipeById(recipeId)
             if (r != null) {
                 title = r.title
+                photoPath = r.originalImagePath
                 servings = r.baseServings.toString()
                 prep = r.prepTimeMinutes?.toString() ?: ""
                 cook = r.cookTimeMinutes?.toString() ?: ""
@@ -72,6 +74,9 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(if (isNew) "New recipe" else "Edit recipe", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        if (!isNew) {
+            PhotoEditSection(path = photoPath, onPathChange = { photoPath = it })
+        }
         if (loaded) {
             OutlinedTextField(
                 value = title,
@@ -156,7 +161,7 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                 Button(onClick = {
                     scope.launch {
                         withContext(Dispatchers.IO) {
-                            saveRecipe(db, recipeId, isNew, title, servings, prep, cook, notes, ingDrafts, stepDrafts)
+                            saveRecipe(db, recipeId, isNew, title, servings, prep, cook, notes, photoPath, ingDrafts, stepDrafts)
                         }
                     }
                     onDone()
@@ -175,6 +180,7 @@ private suspend fun saveRecipe(
     prep: String,
     cook: String,
     notes: String,
+    photoPath: String?,
     ingDrafts: List<DraftIng>,
     stepDrafts: List<DraftStep>,
 ) {
@@ -186,7 +192,7 @@ private suspend fun saveRecipe(
         baseServings = base,
         sourceType = existing?.sourceType ?: "manual",
         sourceNote = existing?.sourceNote,
-        originalImagePath = existing?.originalImagePath,
+        originalImagePath = photoPath,
         notes = notes.ifBlank { null },
         prepTimeMinutes = prep.toIntOrNull(),
         cookTimeMinutes = cook.toIntOrNull(),

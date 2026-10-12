@@ -47,6 +47,7 @@ fun ReviewImportScreen(
     onCancel: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    var photo by remember { mutableStateOf(photoPath) }
     var title by remember { mutableStateOf(parsed.title.ifBlank { "New recipe" }) }
     var servings by remember { mutableStateOf(parsed.baseServings.coerceAtLeast(1).toString()) }
     var ingredients by remember {
@@ -58,7 +59,11 @@ fun ReviewImportScreen(
 
     Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
         Text("Review recipe", fontSize = 26.sp)
-        RecipeThumbnail(photoPath, Modifier.padding(vertical = 12.dp).fillMaxWidth().height(160.dp))
+        PhotoEditSection(
+            path = photo,
+            onPathChange = { photo = it },
+            modifier = Modifier.padding(vertical = 12.dp),
+        )
 
         OutlinedTextField(
             value = title,
@@ -121,7 +126,7 @@ fun ReviewImportScreen(
         ) {
             Button(onClick = {
                 scope.launch {
-                    saveReview(db, title, servings, ingredients, steps, photoPath, sourceNote)
+                    saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
                     onSaved()
                 }
             }) { Text("Save recipe") }
