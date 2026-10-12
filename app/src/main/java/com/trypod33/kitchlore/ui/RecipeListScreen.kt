@@ -1,7 +1,12 @@
 package com.trypod33.kitchlore.ui
 
+import android.accounts.AccountManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,7 +17,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,19 +27,70 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
 import com.trypod33.kitchlore.data.local.AppDatabase
+import com.trypod33.kitchlore.sync.DriveSyncManager
+import kotlinx.coroutines.launch
 
 @Composable
-fun RecipeListScreen(db: AppDatabase, onOpen: (Long) -> Unit) {
+fun RecipeListScreen(
+    db: AppDatabase,
+    onOpen: (Long) -> Unit,
+    onScan: () -> Unit,
+    onPhoto: () -> Unit,
+    onDoc: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
+    var syncing by remember { mutableStateOf(false) }
+    var syncMsg by remember { mutableStateOf<String?>(null) }
     val recipes by db.recipeDao().getAllRecipes().collectAsState(initial = emptyList())
+
+    val accountPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+        if (accountName != null) {
+            DriveSyncManager.saveAccount(context, accountName)
+            syncMsg = "Account saved, tap Sync again"
+        }
+    }
+    val consentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
+        syncMsg = "Permission granted, tap Sync again"
+    }
+
+    fun doSync() {
+        if (syncing) return
+        val cred = DriveSyncManager.credential(context)
+        if (cred.selectedAccountName == null) {
+            accountPicker.launch(cred.newChooseAccountIntent())
+            return
+        }
+        syncing = true
+        syncMsg = "Syncing..."
+        scope.launch {
+            try {
+                syncMsg = DriveSyncManager.sync(context, db)
+            } catch (e: UserRecoverableAuthIOException) {
+                consentLauncher.launch(e.intent)
+                syncMsg = "Google asked for permission"
+            } catch (e: java.io.IOException) {
+                syncMsg = "No connection"
+            } catch (e: Exception) {
+                syncMsg = "Sync failed"
+            }
+            syncing = false
+        }
+    }
+
     val trimmed = query.trim()
     val filtered = if (trimmed.isEmpty()) recipes else recipes.filter { it.title.contains(trimmed, ignoreCase = true) }
     Column(Modifier.fillMaxSize()) {
@@ -49,10 +107,38 @@ fun RecipeListScreen(db: AppDatabase, onOpen: (Long) -> Unit) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
             singleLine = true,
         )
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilledTonalButton(onClick = onScan, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Scan", maxLines = 1)
+            }
+            FilledTonalButton(onClick = onPhoto, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Photo", maxLines = 1)
+            }
+            FilledTonalButton(onClick = onDoc, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Doc", maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = { doSync() },
+                enabled = !syncing,
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                Text(if (syncing) "Syncing" else "Sync", maxLines = 1)
+            }
+        }
+        syncMsg?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+        }
         when {
             filtered.isEmpty() && recipes.isEmpty() -> {
                 Text(
-                    "No recipes yet. Your Termux library imports on first launch.",
+                    "No recipes yet. Scan a page, import a photo or document, or sync the Drive library.",
                     modifier = Modifier.padding(20.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )

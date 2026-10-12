@@ -14,9 +14,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.ui.CookModeRoute
+import com.trypod33.kitchlore.ui.DocImportRoute
 import com.trypod33.kitchlore.ui.EditRecipeScreen
 import com.trypod33.kitchlore.ui.RecipeDetailRoute
 import com.trypod33.kitchlore.ui.RecipeListScreen
+import com.trypod33.kitchlore.ui.ScanRoute
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,7 +60,30 @@ fun KitchloreNav(db: AppDatabase) {
                         onEdit = { screen = "edit:$idStr" },
                     )
                 }
-                else -> RecipeListScreen(db, onOpen = { screen = "detail:$it" })
+                screen == "scan" -> ScanRoute(
+                    db = db,
+                    mode = "camera",
+                    onDone = { screen = "list" },
+                    onBack = { screen = "list" },
+                )
+                screen == "photo" -> ScanRoute(
+                    db = db,
+                    mode = "photo",
+                    onDone = { screen = "list" },
+                    onBack = { screen = "list" },
+                )
+                screen == "doc" -> DocImportRoute(
+                    db = db,
+                    onDone = { screen = "list" },
+                    onBack = { screen = "list" },
+                )
+                else -> RecipeListScreen(
+                    db = db,
+                    onOpen = { screen = "detail:$it" },
+                    onScan = { screen = "scan" },
+                    onPhoto = { screen = "photo" },
+                    onDoc = { screen = "doc" },
+                )
             }
         }
     }
