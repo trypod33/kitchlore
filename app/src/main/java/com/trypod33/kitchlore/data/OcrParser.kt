@@ -198,21 +198,23 @@ object OcrParser {
 
     fun parseIngredientLine(line: String): ParsedIngredient {
         val raw = line.trim().replace(BULLET_PREFIX_RE, "")
-        // OCR garbles the 1/2 glyph ("%"), "V2", "Vs") and "1%" means 1 1/2;
-        // put the fraction back before parsing.
-        val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
-            .map { tok ->
-                val bare = tok.trimEnd('.', ',')
-                val pct = Regex("^(\\d*)%$", RegexOption.IGNORE_CASE).find(bare)
-                val halfish = Regex("^[VvYyJj][sS2]$")
-                when {
-                    pct != null && pct.groupValues[1].isEmpty() -> "1/2"
-                    pct != null && pct.groupValues[1] == "1" -> "1 1/2"
-                    pct != null -> pct.groupValues[1] + " 1/2"
-                    halfish.matches(bare) -> "1/2"
-                    else -> tok
-                }
+        // OCR garbles the fraction glyphs and Keith's card photo confirmed which:
+        // "%" is 1/4, "1%" is 1 1/3, "Vs" is 1/3, "V2" is 1/2, and a unit
+        // mushed into an "h" ("hcup") is 1/2 of that unit.
+        val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }.flatMap { tok ->
+            val bare = tok.trimEnd('.', ',')
+            val pct = Regex("^(\\d*)%$", RegexOption.IGNORE_CASE).find(bare)
+            val hun = Regex("^h(cups?|tbsps?|tsps?|tablespoons?|teaspoons?)$", RegexOption.IGNORE_CASE).find(bare)
+            when {
+                pct != null && pct.groupValues[1].isEmpty() -> listOf("1/4")
+                pct != null && pct.groupValues[1] == "1" -> listOf("1 1/3")
+                pct != null -> listOf(pct.groupValues[1] + " 1/4")
+                bare.equals("Vs", true) -> listOf("1/3")
+                bare.equals("V2", true) -> listOf("1/2")
+                hun != null -> listOf("1/2", hun.groupValues[1])
+                else -> listOf(tok)
             }
+        }
         var idx = 0
         var amount: Double? = null
         var unit: String? = null
@@ -378,6 +380,16 @@ object OcrParser {
         return s.trim().removePrefix(":").trim()
     }
 
+    private val STEP_VERBS = setOf(
+        "stir", "mix", "bake", "serve", "chill", "rest", "cool", "whisk", "fold", "cover",
+        "simmer", "boil", "brown", "drain", "pour", "sprinkle", "garnish", "enjoy",
+        "refrigerate", "freeze", "marinate", "broil", "melt", "beat", "knead", "roll",
+        "spread", "layer", "season", "taste", "remove", "return", "repeat", "combine",
+        "add", "heat", "cook", "cut", "slice", "chop", "blend", "shape", "fill", "place",
+        "arrange", "meanwhile", "preheat", "spray", "grease", "brush", "press", "pat",
+        "dip", "coat", "toss", "wait", "let", "salt",
+    )
+
     private fun parseSteps(lines: List<String>): List<ParsedStep> {
         val out = mutableListOf<ParsedStep>()
         for (raw in lines) {
@@ -386,6 +398,8 @@ object OcrParser {
             val hasNum = NUM_PREFIX_RE.containsMatchIn(l)
             val text = stripStepPrefix(l)
             if (text.isBlank()) continue
+            val words = text.split(Regex("\\s+"))
+            if (words.size == 1 && !STEP_VERBS.contains(words[0].trimEnd('.', '!', '?').lowercase())) continue
             if (hasNum || out.isEmpty()) {
                 out.add(ParsedStep(text, timerFor(text)))
             } else {

@@ -40,6 +40,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -231,8 +235,8 @@ fun ScanRoute(
 private fun runOcr(context: android.content.Context, image: Any, onDone: (ParsedRecipe, String?) -> Unit) {
     val input = try {
         when (image) {
-            is File -> InputImage.fromFilePath(context, Uri.fromFile(image))
-            is Uri -> InputImage.fromFilePath(context, image)
+            is File -> loadPreppedBitmap(context, Uri.fromFile(image))?.let { InputImage.fromBitmap(it, 0) }
+            is Uri -> loadPreppedBitmap(context, image)?.let { InputImage.fromBitmap(it, 0) }
             else -> null
         }
     } catch (t: Throwable) {
@@ -259,6 +263,65 @@ private fun runOcr(context: android.content.Context, image: Any, onDone: (Parsed
         .addOnFailureListener {
             onDone(OcrParser.parse(""), null)
         }
+}
+
+// The scanner garbles fraction glyphs (1/4, 1/3, 1/2) on dim phone photos;
+// loading the page full-size, boosting contrast and upscaling small captures
+// gives the recognizer a much cleaner image to read.
+private fun loadPreppedBitmap(context: android.content.Context, uri: Uri): Bitmap? { return try {
+    val resolver = context.contentResolver
+    val bmp = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+        ?: return null
+    val rotation = resolver.openInputStream(uri)?.use { ins ->
+        when (ExifInterface(ins).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+    } ?: 0f
+    val upright = if (rotation != 0f)
+        Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rotation) }, true)
+    else bmp
+    preppedForOcr(upright)
+} catch (t: Throwable) {
+    null
+} }
+
+private fun preppedForOcr(src: Bitmap): Bitmap {
+    // keep the OCR workload sane, then upscale small captures so glyphs are legible
+    val cap = 2600
+    val longest = maxOf(src.width, src.height)
+    val capped = if (longest > cap) {
+        val f = cap.toFloat() / longest
+        Bitmap.createScaledBitmap(src, (src.width * f).toInt().coerceAtLeast(1), (src.height * f).toInt().coerceAtLeast(1), true)
+    } else src
+    val scale = if (longest < 1600) 2f else 1f
+    val big = if (scale > 1f)
+        Bitmap.createScaledBitmap(capped, (capped.width * scale).toInt(), (capped.height * scale).toInt(), true)
+    else capped
+    val w = big.width
+    val h = big.height
+    val px = IntArray(w * h)
+    big.getPixels(px, 0, w, 0, 0, w, h)
+    var lo = 255
+    var hi = 0
+    val lum = IntArray(w * h)
+    for (i in px.indices) {
+        val p = px[i]
+        val l = (299 * ((p shr 16) and 0xFF) + 587 * ((p shr 8) and 0xFF) + 114 * (p and 0xFF)) / 1000
+        lum[i] = l
+        if (l < lo) lo = l
+        if (l > hi) hi = l
+    }
+    val range = (hi - lo).coerceAtLeast(1)
+    for (i in lum.indices) {
+        val v = (((lum[i] - lo) * 255) / range).coerceIn(0, 255)
+        px[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+    }
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    out.setPixels(px, 0, w, 0, 0, w, h)
+    return out
 }
 
 private fun copyUriToPhotos(context: android.content.Context, uri: Uri): String? {
