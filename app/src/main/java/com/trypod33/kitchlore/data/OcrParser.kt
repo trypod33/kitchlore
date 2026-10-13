@@ -84,6 +84,12 @@ object OcrParser {
         "^(?:instructions?|instruction|directions?|method|steps?|preparation|procedure)\\s*:?\\s*$",
         RegexOption.IGNORE_CASE,
     )
+    private val PROSE_LINE_RE = Regex(
+        "^(?:you may|tip|tips|note|variation|make ahead|storage|to serve|serving suggestion|" +
+            "and|or|until|with|for)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
     // A line that is just an oven temperature, optionally with "bake/heat at".
     private val TEMP_LINE_RE = Regex(
         "^(?:bake|heat|preheat|cook|set)?\\s*(?:at\\s*)?\\d{2,4}\\s*(?:degrees?\\s*)?(?:°\\s*)?[FCfF]\\b\\.?\\s*$",
@@ -145,7 +151,17 @@ object OcrParser {
                 val stepLines = if (stepIdx >= 0) lines.subList(stepIdx + 1, lines.size) else emptyList()
                 ingLines.forEach { l ->
                     if (isIngredientNoise(l)) return@forEach
-                    ingredients.add(parseIngredientLine(l))
+                    val prev = ingredients.lastOrNull()
+                    if (prev != null && isContinuation(l, prev)) {
+                        ingredients[ingredients.size - 1] = ParsedIngredient(
+                            name = (prev.name + " " + l).trim(),
+                            rawText = (prev.rawText + " " + l).trim(),
+                            amount = prev.amount,
+                            unit = prev.unit,
+                        )
+                    } else {
+                        ingredients.add(parseIngredientLine(l))
+                    }
                 }
                 steps.addAll(parseSteps(stepLines))
             }
@@ -155,6 +171,15 @@ object OcrParser {
                     when {
                         looksLikeStep(l) -> steps.add(ParsedStep(stripStepPrefix(l), timerFor(stripStepPrefix(l))))
                         isIngredientNoise(l) -> {}
+                        isContinuation(l, ingredients.lastOrNull()) -> {
+                            val prev = ingredients.last()
+                            ingredients[ingredients.size - 1] = ParsedIngredient(
+                                name = (prev.name + " " + l).trim(),
+                                rawText = (prev.rawText + " " + l).trim(),
+                                amount = prev.amount,
+                                unit = prev.unit,
+                            )
+                        }
                         else -> ingredients.add(parseIngredientLine(l))
                     }
                 }
@@ -173,9 +198,21 @@ object OcrParser {
 
     fun parseIngredientLine(line: String): ParsedIngredient {
         val raw = line.trim().replace(BULLET_PREFIX_RE, "")
-        // OCR reads the 1/2 glyph as "%"; put the fraction back before parsing.
+        // OCR garbles the 1/2 glyph ("%"), "V2", "Vs") and "1%" means 1 1/2;
+        // put the fraction back before parsing.
         val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
-            .map { if (it.trimEnd('.', ',') == "%") "1/2" else it }
+            .map { tok ->
+                val bare = tok.trimEnd('.', ',')
+                val pct = Regex("^(\\d*)%$", RegexOption.IGNORE_CASE).find(bare)
+                val halfish = Regex("^[VvYyJj][sS2]$")
+                when {
+                    pct != null && pct.groupValues[1].isEmpty() -> "1/2"
+                    pct != null && pct.groupValues[1] == "1" -> "1 1/2"
+                    pct != null -> pct.groupValues[1] + " 1/2"
+                    halfish.matches(bare) -> "1/2"
+                    else -> tok
+                }
+            }
         var idx = 0
         var amount: Double? = null
         var unit: String? = null
@@ -196,10 +233,19 @@ object OcrParser {
                 }
             }
         }
+        val unitCand: (Int) -> String? = { i ->
+            val c = tokens[i].trimEnd('.', ',').lowercase()
+            if (c in UNITS) tokens[i].trimEnd('.', ',') else null
+        }
         if (amount != null && idx < tokens.size) {
-            val cand = tokens[idx].trimEnd('.', ',').lowercase()
-            if (cand in UNITS) {
-                unit = tokens[idx].trimEnd('.', ',')
+            unitCand(idx)?.let {
+                unit = it
+                idx++
+            }
+        } else if (amount == null && idx < tokens.size) {
+            // "cup chopped green onion": the scan lost the amount, keep the unit.
+            unitCand(idx)?.let {
+                unit = it
                 idx++
             }
         }
@@ -289,6 +335,22 @@ object OcrParser {
         return false
     }
 
+    // OCR wraps long ingredient lines; a short lowercase line with no leading
+    // amount that follows an amount-bearing ingredient is its continuation
+    // ("1.5 cups concentrated chicken" + "broth").
+    private fun isContinuation(line: String, prev: ParsedIngredient?): Boolean {
+        if (prev == null || prev.amount == null) return false
+        val t = line.trim()
+        if (t.isEmpty()) return false
+        if (LEADING_QTY_RE.containsMatchIn(t) || LEADING_QTY_ALT_RE.containsMatchIn(t)) return false
+        val tokens = t.split(Regex("\\s+"))
+        if (tokens.size > 3) return false
+        val c = tokens[0][0]
+        if (c.isDigit() || c.isUpperCase()) return false
+        if (parseAmount(tokens[0]) != null) return false
+        return true
+    }
+
     // Rules that only apply to ingredient lines: steps can run long and can
     // legitimately contain temperatures ("Bake at 350°F for 30 minutes").
     private fun isIngredientNoise(line: String): Boolean {
@@ -297,6 +359,9 @@ object OcrParser {
         if (line.split(Regex("\\s+")).size > 12) return true
         // A bare temperature ("350°F", "450 degrees F") is not an ingredient.
         if (TEMP_LINE_RE.containsMatchIn(line.trim())) return true
+        // Tips/notes prose and its wrapped fragments ("You may prepare and bake",
+        // "and freeze them, well wrapped").
+        if (PROSE_LINE_RE.containsMatchIn(line.trim())) return true
         return false
     }
 
