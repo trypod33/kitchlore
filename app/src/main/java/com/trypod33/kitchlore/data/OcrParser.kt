@@ -173,7 +173,9 @@ object OcrParser {
 
     fun parseIngredientLine(line: String): ParsedIngredient {
         val raw = line.trim().replace(BULLET_PREFIX_RE, "")
+        // OCR reads the 1/2 glyph as "%"; put the fraction back before parsing.
         val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            .map { if (it.trimEnd('.', ',') == "%") "1/2" else it }
         var idx = 0
         var amount: Double? = null
         var unit: String? = null
@@ -212,6 +214,7 @@ object OcrParser {
 
     fun parseAmount(s: String): Double? {
         var str = s.trim()
+        if (str.trimEnd('.', ',') == "%") return 0.5  // OCR misread of the 1/2 glyph
         var total = 0.0
         var found = false
         for ((ch, v) in FRACTIONS) {
