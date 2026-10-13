@@ -84,6 +84,12 @@ object OcrParser {
         "^(?:instructions?|instruction|directions?|method|steps?|preparation|procedure)\\s*:?\\s*$",
         RegexOption.IGNORE_CASE,
     )
+    // A line that is just an oven temperature, optionally with "bake/heat at".
+    private val TEMP_LINE_RE = Regex(
+        "^(?:bake|heat|preheat|cook|set)?\\s*(?:at\\s*)?\\d{2,4}\\s*(?:degrees?\\s*)?(?:°\\s*)?[FCfF]\\b\\.?\\s*$",
+        RegexOption.IGNORE_CASE,
+    )
+
     private val NUM_PREFIX_RE = Regex("^\\s*(?:step\\s*)?(\\d+)[.)\\]]?\\s*", RegexOption.IGNORE_CASE)
     private val BULLET_PREFIX_RE = Regex("^\\s*[•*\\-–]\\s+")
     private val TIMER_RE = Regex(
@@ -138,7 +144,7 @@ object OcrParser {
                 val ingLines = lines.subList(ingIdx + 1, if (stepIdx >= 0) stepIdx else lines.size)
                 val stepLines = if (stepIdx >= 0) lines.subList(stepIdx + 1, lines.size) else emptyList()
                 ingLines.forEach { l ->
-                    if (isNoise(l)) return@forEach
+                    if (isIngredientNoise(l)) return@forEach
                     ingredients.add(parseIngredientLine(l))
                 }
                 steps.addAll(parseSteps(stepLines))
@@ -148,6 +154,7 @@ object OcrParser {
                     if (i < startIdx || i == titleLineIdx || isNoise(l)) return@forEachIndexed
                     when {
                         looksLikeStep(l) -> steps.add(ParsedStep(stripStepPrefix(l), timerFor(stripStepPrefix(l))))
+                        isIngredientNoise(l) -> {}
                         else -> ingredients.add(parseIngredientLine(l))
                     }
                 }
@@ -276,8 +283,17 @@ object OcrParser {
         val clean = line.trim().trimEnd('.', ' ').trim()
         if (clean.endsWith(":") && clean.none { it.isDigit() } && clean.length <= 25) return true
         if (clean.length <= 30 && clean.lowercase() in JUNK_EXACT) return true
+        return false
+    }
+
+    // Rules that only apply to ingredient lines: steps can run long and can
+    // legitimately contain temperatures ("Bake at 350°F for 30 minutes").
+    private fun isIngredientNoise(line: String): Boolean {
+        if (isNoise(line)) return true
         // Tips/notes prose: ingredient lines never run past ~12 words.
         if (line.split(Regex("\\s+")).size > 12) return true
+        // A bare temperature ("350°F", "450 degrees F") is not an ingredient.
+        if (TEMP_LINE_RE.containsMatchIn(line.trim())) return true
         return false
     }
 
