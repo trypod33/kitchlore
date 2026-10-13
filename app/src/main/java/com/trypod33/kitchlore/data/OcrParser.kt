@@ -198,19 +198,18 @@ object OcrParser {
 
     fun parseIngredientLine(line: String): ParsedIngredient {
         val raw = line.trim().replace(BULLET_PREFIX_RE, "")
-        // OCR garbles the fraction glyphs and Keith's card photo confirmed which:
-        // "%" is 1/4, "1%" is 1 1/3, "Vs" is 1/3, "V2" is 1/2, and a unit
-        // mushed into an "h" ("hcup") is 1/2 of that unit.
+        // OCR garbles the fraction glyphs, and one garble can mean different
+        // fractions on the same card ("%"/"1%" read as 1/4, 1/3 and 1 1/2 on
+        // Keith's test card), so those stay visible for the reviewer to fix.
+        // The reliable reads get cleaned up: "Vs" is 1/3, "V2" is 1/2, "|" is
+        // a 1, and a unit mushed into an "h" ("hcup") is 1/2 of that unit.
         val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }.flatMap { tok ->
             val bare = tok.trimEnd('.', ',')
-            val pct = Regex("^(\\d*)%$", RegexOption.IGNORE_CASE).find(bare)
             val hun = Regex("^h(cups?|tbsps?|tsps?|tablespoons?|teaspoons?)$", RegexOption.IGNORE_CASE).find(bare)
             when {
-                pct != null && pct.groupValues[1].isEmpty() -> listOf("1/4")
-                pct != null && pct.groupValues[1] == "1" -> listOf("1 1/3")
-                pct != null -> listOf(pct.groupValues[1] + " 1/4")
                 bare.equals("Vs", true) -> listOf("1/3")
                 bare.equals("V2", true) -> listOf("1/2")
+                bare == "|" -> listOf("1")
                 hun != null -> listOf("1/2", hun.groupValues[1])
                 else -> listOf(tok)
             }
@@ -262,7 +261,6 @@ object OcrParser {
 
     fun parseAmount(s: String): Double? {
         var str = s.trim()
-        if (str.trimEnd('.', ',') == "%") return 0.5  // OCR misread of the 1/2 glyph
         var total = 0.0
         var found = false
         for ((ch, v) in FRACTIONS) {

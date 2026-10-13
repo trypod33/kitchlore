@@ -51,7 +51,7 @@ fun ReviewImportScreen(
     var title by remember { mutableStateOf(parsed.title.ifBlank { "New recipe" }) }
     var servings by remember { mutableStateOf(parsed.baseServings.coerceAtLeast(1).toString()) }
     var ingredients by remember {
-        mutableStateOf(parsed.ingredients.map { it.rawText.ifBlank { it.name } }.ifEmpty { listOf("") })
+        mutableStateOf(parsed.ingredients.map { displayLine(it) }.ifEmpty { listOf("") })
     }
     var steps by remember {
         mutableStateOf(parsed.steps.map { it.instructionText }.ifEmpty { listOf("") })
@@ -178,4 +178,32 @@ private suspend fun saveReview(
             Step(recipeId = rid, stepNumber = i + 1, instructionText = line, timerSeconds = OcrParser.timerFor(line))
         }
     if (stepEntities.isNotEmpty()) db.stepDao().insertAll(stepEntities)
+}
+
+// Show the cleaned parse (like "1/2 cup butter or margarine") rather than the
+// raw OCR line, so parser fixes reach what the reviewer sees; the raw line is
+// the fallback when the parse came back empty.
+private fun displayLine(p: com.trypod33.kitchlore.data.ParsedIngredient): String {
+    val name = p.name.ifBlank { p.rawText }
+    val head = listOfNotNull(
+        p.amount?.let { formatFraction(it) },
+        p.unit?.takeIf { it.isNotBlank() },
+    )
+    if (head.isEmpty()) return name
+    val headText = head.joinToString(" ")
+    if (name.startsWith(headText)) return name
+    return "$headText $name"
+}
+
+private fun formatFraction(v: Double): String {
+    val glyphs = listOf(0.25 to "\u00bc", (1.0 / 3) to "\u2153", 0.5 to "\u00bd", (2.0 / 3) to "\u2154", 0.75 to "\u00be")
+    val whole = v.toInt()
+    val frac = v - whole
+    val g = glyphs.minByOrNull { kotlin.math.abs(it.first - frac) }
+    val fracText = g?.takeIf { kotlin.math.abs(it.first - frac) < 0.08 }?.second
+    return when {
+        fracText != null -> (if (whole > 0) whole.toString() else "") + fracText
+        v == v.toInt().toDouble() -> v.toInt().toString()
+        else -> v.toString()
+    }
 }
