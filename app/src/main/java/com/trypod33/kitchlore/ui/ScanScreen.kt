@@ -2,10 +2,12 @@ package com.trypod33.kitchlore.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.view.ScaleGestureDetector
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -72,6 +74,7 @@ fun ScanRoute(
     var error by remember { mutableStateOf<String?>(null) }
     var parsed by remember { mutableStateOf<Pair<ParsedRecipe, String?>?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var cameraRef by remember { mutableStateOf<Camera?>(null) }
     val providerFuture = remember { ProcessCameraProvider.getInstance(context) }
 
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -145,12 +148,34 @@ fun ScanRoute(
                                             .build()
                                         imageCapture = capture
                                         provider.unbindAll()
-                                        provider.bindToLifecycle(
+                                        val camera = provider.bindToLifecycle(
                                             lifecycleOwner,
                                             CameraSelector.DEFAULT_BACK_CAMERA,
                                             cameraPreview,
                                             capture,
                                         )
+                                        cameraRef = camera
+                                        // Pinch to zoom: scale the current zoom ratio within the lens limits.
+                                        val zoomer = ScaleGestureDetector(
+                                            ctx,
+                                            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                                                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                                                    val state = camera.cameraInfo.zoomState.value
+                                                    val next = ((state?.zoomRatio ?: 1f) * detector.scaleFactor)
+                                                        .coerceIn(
+                                                            state?.minZoomRatio ?: 1f,
+                                                            state?.maxZoomRatio ?: 1f,
+                                                        )
+                                                    camera.cameraControl.setZoomRatio(next)
+                                                    return true
+                                                }
+                                            },
+                                        )
+                                        view.setOnTouchListener { v, event ->
+                                            zoomer.onTouchEvent(event)
+                                            v.performClick()
+                                            true
+                                        }
                                     },
                                     ContextCompat.getMainExecutor(ctx),
                                 )
