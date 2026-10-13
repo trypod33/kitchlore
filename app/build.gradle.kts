@@ -1,11 +1,26 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
 }
 
 import java.util.Base64
+import java.util.Properties
+
+// Reads an override from local.properties or gradle.properties (like the other
+// Kinalm apps): hfToken is a Hugging Face read token for the gated Gemma repo.
+fun prop(name: String, def: String): String {
+    val props = Properties()
+    for (f in listOf(rootProject.file("local.properties"), rootProject.file("gradle.properties"))) {
+        if (f.exists()) {
+            f.inputStream().use { props.load(it) }
+            val v = props.getProperty(name)
+            if (!v.isNullOrBlank()) return v.trim().trim('"')
+        }
+    }
+    return def
+}
 
 // Shared debug signing key (same keystore as Friday): stored as base64 text so every
 // CI build and every local build is signed the same way — new APKs install over old ones.
@@ -24,8 +39,10 @@ android {
         applicationId = "com.trypod33.kitchlore"
         minSdk = 26
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.2.9"
+        versionCode = 12
+        versionName = "0.3.0"
+        buildConfigField("String", "MODEL_URL", "\"${prop("modelUrl", "https://huggingface.co/litert-community/gemma-3-270m-it/resolve/main/gemma3-270m-it-q8.litertlm")}\"")
+        buildConfigField("String", "HF_TOKEN", "\"${prop("hfToken", "")}\"")
     }
 
     buildTypes {
@@ -51,11 +68,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources {
@@ -71,8 +87,11 @@ android {
             )
         }
     }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
 
@@ -86,17 +105,21 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    implementation("androidx.room:room-runtime:2.8.5")
+    implementation("androidx.room:room-ktx:2.8.5")
+    ksp("androidx.room:room-compiler:2.8.5")
 
-    implementation("com.google.dagger:hilt-android:2.51.1")
-    ksp("com.google.dagger:hilt-compiler:2.51.1")
+    implementation("com.google.dagger:hilt-android:2.60.1")
+    ksp("com.google.dagger:hilt-compiler:2.60.1")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
+
+    // First-scan model download + on-device inference (same stack as KidCompanion).
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.1")
 
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
