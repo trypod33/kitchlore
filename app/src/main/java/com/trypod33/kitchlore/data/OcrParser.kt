@@ -346,7 +346,13 @@ object OcrParser {
     // amount that follows an amount-bearing ingredient is its continuation
     // ("1.5 cups concentrated chicken" + "broth").
     private fun isContinuation(line: String, prev: ParsedIngredient?): Boolean {
-        if (prev == null || prev.amount == null) return false
+        if (prev == null) return false
+        // A previous line whose amount OCR garbled ("1% cups concentrated
+        // chicken") may not have parsed to a number, but it is still an
+        // amount-led ingredient, so its wrapped tail ("broth") belongs to it.
+        if (prev.amount == null &&
+            !GARBLED_QTY_LINE_RE.containsMatchIn(prev.rawText.ifBlank { prev.name })
+        ) return false
         val t = line.trim()
         if (t.isEmpty()) return false
         if (LEADING_QTY_RE.containsMatchIn(t) || LEADING_QTY_ALT_RE.containsMatchIn(t)) return false

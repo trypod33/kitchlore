@@ -16,15 +16,12 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
-/** Raised when Hugging Face wants a license-accepted account (401/403). */
-class NeedTokenException : Exception("Hugging Face token required")
-
 /**
  * The optional AI pass over scanned ingredient lines. Nothing ships in the APK:
- * Gemma 3 270M (~300 MB, LiteRT format) is pulled once, on the first scan that
- * has garbled lines, from BuildConfig.MODEL_URL, and runs fully on-device after
- * that. Gemma's terms ask us to pass Google's use restrictions along, so the
- * download UI names the license (ai.google.dev/gemma/terms).
+ * SmolLM2-360M-Instruct (~400 MB, LiteRT format, Apache 2.0) is pulled once, on
+ * the first scan that has garbled lines, from BuildConfig.MODEL_URL, and runs
+ * fully on-device after that. Ungated: no Hugging Face account or token, the
+ * download just runs.
  */
 object RecipeLlm {
     @Volatile private var engine: Engine? = null
@@ -33,19 +30,10 @@ object RecipeLlm {
     var ready: Boolean = false
         private set
 
-    fun modelFile(context: Context): File = File(context.filesDir, "kitchlore-gemma270m.litertlm")
+    fun modelFile(context: Context): File = File(context.filesDir, "kitchlore-smollm2-360m.litertlm")
 
     fun hasModel(context: Context): Boolean =
         modelFile(context).let { it.exists() && it.length() > 100L * 1024 * 1024 }
-
-    fun savedToken(context: Context): String =
-        context.getSharedPreferences("kitchlore", Context.MODE_PRIVATE)
-            .getString("hf_token", "") ?: ""
-
-    fun saveToken(context: Context, token: String) {
-        context.getSharedPreferences("kitchlore", Context.MODE_PRIVATE)
-            .edit().putString("hf_token", token.trim()).apply()
-    }
 
     // Lines the deterministic parser deliberately leaves ambiguous ("%"/"1%"
     // read as 1/4, 1/3 and 1 1/2 on different cards) or garbled ("h cup", "V2",
@@ -67,15 +55,20 @@ object RecipeLlm {
 
     private const val SYSTEM = (
         "You fix OCR-mangled recipe ingredient lines. You are given one line. " +
-        "Reply with only the corrected line: repair fraction glyphs and stray " +
-        "characters, keep the units and food words as written, keep the meaning. " +
-        "Never add or remove ingredients."
+        "Reply with only the corrected line, writing fractions in plain digits " +
+        "and slashes like 1/4, 1/2, 3/4, 1 1/2. Fraction glyphs often OCR as a " +
+        "percent sign: a bare % before a unit is 1/4, 1/3 or 1/2 depending on " +
+        "what is typical for that ingredient (1/3 cup flour, 1/4 cup green " +
+        "onion); 1% before a unit is usually 1 1/2, occasionally 1 1/3; Vs, V2 " +
+        "or h before a unit is 1/2. Fix obvious letter garbles in food words " +
+        "only when the intended word is unambiguous from the line (onic -> " +
+        "onion). Keep the units and food words as written, keep the meaning, " +
+        "and never add, remove or invent anything."
     )
 
     /**
-     * Runs the AI cleanup over the suspect lines. Throws NeedTokenException if
-     * the model download needs a Hugging Face token; other failures are thrown
-     * to the caller, which falls back to the deterministic parse.
+     * Runs the AI cleanup over the suspect lines. Failures are thrown to the
+     * caller, which falls back to the deterministic parse.
      */
     suspend fun enhance(context: Context, recipe: ParsedRecipe, onStatus: (String) -> Unit): ParsedRecipe {
         val idxs = suspectIndices(recipe).toSet()
@@ -113,12 +106,9 @@ object RecipeLlm {
                 return download(
                     context,
                     com.trypod33.kitchlore.BuildConfig.MODEL_URL,
-                    savedToken(context).ifBlank { com.trypod33.kitchlore.BuildConfig.HF_TOKEN },
                 ) { pct ->
-                    onStatus("Downloading the AI model, $pct% (one time, about 300 MB)")
+                    onStatus("Downloading the AI model, $pct% (one time, about 400 MB)")
                 }
-            } catch (e: NeedTokenException) {
-                throw e
             } catch (t: Throwable) {
                 if (attempt >= 3) throw t
                 onStatus("Model download hiccup, retrying")
@@ -135,12 +125,11 @@ object RecipeLlm {
     private suspend fun download(
         context: Context,
         url: String,
-        token: String,
         onProgress: (Int) -> Unit,
     ): File = withContext(Dispatchers.IO) {
         val dest = modelFile(context)
         if (hasModel(context)) return@withContext dest
-        val tmp = File(context.filesDir, "kitchlore-gemma270m.litertlm.part")
+        val tmp = File(context.filesDir, "kitchlore-smollm2-360m.litertlm.part")
         val client = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
@@ -151,12 +140,10 @@ object RecipeLlm {
             try {
                 val offset = if (tmp.exists()) tmp.length() else 0L
                 val req = Request.Builder().url(url).apply {
-                    if (token.isNotBlank()) header("Authorization", "Bearer $token")
                     header("User-Agent", "Kitchlore/0.3")
                     if (offset > 0) header("Range", "bytes=$offset-")
                 }.build()
                 client.newCall(req).execute().use { r ->
-                    if (r.code == 401 || r.code == 403) throw NeedTokenException()
                     check(r.isSuccessful) { "Download failed: HTTP ${r.code}" }
                     val resumed = r.code == 206 && offset > 0
                     if (!resumed && offset > 0) tmp.delete()
@@ -194,9 +181,6 @@ object RecipeLlm {
                     tmp.delete()
                 }
                 return@withContext dest
-            } catch (e: NeedTokenException) {
-                tmp.delete()
-                throw e
             } catch (t: Throwable) {
                 if (attempt >= 4) throw t
                 kotlinx.coroutines.delay(2000L * attempt)
@@ -229,7 +213,7 @@ object RecipeLlm {
     }
 
     /**
-     * One line in, one corrected line out. The 270M model is small, so the
+     * One line in, one corrected line out. The 360M model is small, so the
      * output is guarded: anything that does not read as a sane ingredient line
      * is ignored and the deterministic parse stands.
      */

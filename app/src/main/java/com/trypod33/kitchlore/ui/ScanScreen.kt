@@ -23,9 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,7 +49,6 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.trypod33.kitchlore.data.OcrParser
-import com.trypod33.kitchlore.data.NeedTokenException
 import com.trypod33.kitchlore.data.RecipeLlm
 import kotlinx.coroutines.launch
 import com.trypod33.kitchlore.data.ParsedRecipe
@@ -82,8 +79,6 @@ fun ScanRoute(
     }
     val scope = rememberCoroutineScope()
     var aiStatus by remember { mutableStateOf<String?>(null) }
-    var needToken by remember { mutableStateOf(false) }
-    var pendingEnhance by remember { mutableStateOf<Pair<ParsedRecipe, String?>?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var parsed by remember { mutableStateOf<Pair<ParsedRecipe, String?>?>(null) }
@@ -96,10 +91,6 @@ fun ScanRoute(
             try {
                 val fixed = RecipeLlm.enhance(context, recipe) { st -> aiStatus = st.ifBlank { null } }
                 parsed = fixed to path
-                aiStatus = null
-            } catch (e: NeedTokenException) {
-                pendingEnhance = recipe to path
-                needToken = true
                 aiStatus = null
             } catch (t: Throwable) {
                 // The AI pass is optional; the deterministic parse still stands.
@@ -265,18 +256,6 @@ fun ScanRoute(
             Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(20.dp))
         }
 
-        if (needToken) {
-            AiTokenDialog(
-                onDismiss = { needToken = false },
-                onSave = { token ->
-                    needToken = false
-                    RecipeLlm.saveToken(context, token)
-                    val pr = pendingEnhance
-                    pendingEnhance = null
-                    if (pr != null) enhance(pr.first, pr.second)
-                },
-            )
-        }
     }
 }
 
@@ -387,32 +366,3 @@ private fun copyUriToPhotos(context: android.content.Context, uri: Uri): String?
     }
 }
 
-@Composable
-private fun AiTokenDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var token by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Hugging Face token") },
-        text = {
-            Column {
-                Text(
-                    "The AI cleanup model lives on Hugging Face, which wants a free token from an account that accepted Gemma's license. Paste a read token (hf_...) once and it is saved on this device only.",
-                )
-                OutlinedTextField(
-                    value = token,
-                    onValueChange = { token = it },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { if (token.isNotBlank()) onSave(token) }) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Skip AI for now") }
-        },
-    )
-}

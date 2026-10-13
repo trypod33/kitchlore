@@ -9,7 +9,7 @@ import java.util.Base64
 import java.util.Properties
 
 // Reads an override from local.properties or gradle.properties (like the other
-// Kinalm apps): hfToken is a Hugging Face read token for the gated Gemma repo.
+// Kinalm apps): modelUrl is the AI cleanup model download URL.
 fun prop(name: String, def: String): String {
     val props = Properties()
     for (f in listOf(rootProject.file("local.properties"), rootProject.file("gradle.properties"))) {
@@ -39,10 +39,9 @@ android {
         applicationId = "com.trypod33.kitchlore"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.3.0"
-        buildConfigField("String", "MODEL_URL", "\"${prop("modelUrl", "https://huggingface.co/litert-community/gemma-3-270m-it/resolve/main/gemma3-270m-it-q8.litertlm")}\"")
-        buildConfigField("String", "HF_TOKEN", "\"${prop("hfToken", "")}\"")
+        versionCode = 13
+        versionName = "0.3.1"
+        buildConfigField("String", "MODEL_URL", "\"${prop("modelUrl", "https://huggingface.co/litert-community/SmolLM2-360M-Instruct/resolve/main/SmolLM2_360M_instruct.litertlm")}\"")
     }
 
     buildTypes {
@@ -131,4 +130,10 @@ dependencies {
     implementation("com.google.android.gms:play-services-auth:21.2.0")
 
     testImplementation("junit:junit:4.13.2")
+}
+
+// Export Room schemas so every version bump gets a checked-in baseline and future
+// migrations are written against real history instead of guesses.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }

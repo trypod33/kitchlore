@@ -17,7 +17,9 @@ class KitchloreApp : Application() {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val database: AppDatabase by lazy {
-        Room.databaseBuilder(this, AppDatabase::class.java, "kitchlore.db").build()
+        Room.databaseBuilder(this, AppDatabase::class.java, "kitchlore.db")
+            .addMigrations(*AppDatabase.MIGRATIONS)
+            .build()
     }
 
     override fun onCreate() {
