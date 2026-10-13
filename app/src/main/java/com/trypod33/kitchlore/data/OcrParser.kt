@@ -96,6 +96,13 @@ object OcrParser {
         RegexOption.IGNORE_CASE,
     )
 
+    // A line that starts with an amount the scanner garbled: "h cup broth",
+    // "V2 cup sugar", "Vs tsp salt", "1% cups flour", "3/4 cup milk".
+    private val GARBLED_QTY_LINE_RE = Regex(
+        "^\\s*(?:[hvV]\\s*\\d?\\s*)?(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|qts?|qts\\.|oz|ounces?|lbs?|pounds?|cloves?|slices?)\\b|^(?:Vs|V\\d)\\b|^\\d+\\s*[/%%]\\s*\\d?|^[hV]\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
     private val NUM_PREFIX_RE = Regex("^\\s*(?:step\\s*)?(\\d+)[.)\\]]?\\s*", RegexOption.IGNORE_CASE)
     private val BULLET_PREFIX_RE = Regex("^\\s*[•*\\-–]\\s+")
     private val TIMER_RE = Regex(
@@ -343,6 +350,11 @@ object OcrParser {
         val t = line.trim()
         if (t.isEmpty()) return false
         if (LEADING_QTY_RE.containsMatchIn(t) || LEADING_QTY_ALT_RE.containsMatchIn(t)) return false
+        // A line that carries its own amount (plain or OCR-garbled, "1/2 cup
+        // broth" or "h cup broth") is a new ingredient, never a continuation;
+        // without this the next ingredient's amount lands inside the last one
+        // ("celery, sliced h cup").
+        if (GARBLED_QTY_LINE_RE.containsMatchIn(t)) return false
         val tokens = t.split(Regex("\\s+"))
         if (tokens.size > 3) return false
         val c = tokens[0][0]
@@ -351,12 +363,25 @@ object OcrParser {
         return true
     }
 
+    // A short line with no amount and no unit that dangles on a preposition or
+    // conjunction ("Poultry at", "well wrapped and") is a torn-off fragment of
+    // a wrapped line, not an ingredient.
+    private val DANGLING_END_RE = Regex(
+        "\\b(?:at|or|and|of|in|with|for|to|from|into|over|until)\\s*[.,;]??\\s*$",
+        RegexOption.IGNORE_CASE,
+    )
+
     // Rules that only apply to ingredient lines: steps can run long and can
     // legitimately contain temperatures ("Bake at 350°F for 30 minutes").
     private fun isIngredientNoise(line: String): Boolean {
         if (isNoise(line)) return true
         // Tips/notes prose: ingredient lines never run past ~12 words.
         if (line.split(Regex("\\s+")).size > 12) return true
+        // Torn-off fragment ("Poultry at").
+        val fragTokens = line.trim().split(Regex("\\s+"))
+        if (fragTokens.size in 1..3 && parseAmount(fragTokens[0]) == null &&
+            fragTokens[0].lowercase() !in UNITS && DANGLING_END_RE.containsMatchIn(line.trim())
+        ) return true
         // A bare temperature ("350°F", "450 degrees F") is not an ingredient.
         if (TEMP_LINE_RE.containsMatchIn(line.trim())) return true
         // Tips/notes prose and its wrapped fragments ("You may prepare and bake",
