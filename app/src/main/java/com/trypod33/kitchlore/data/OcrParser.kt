@@ -110,7 +110,11 @@ object OcrParser {
         RegexOption.IGNORE_CASE,
     )
 
-    fun parse(text: String, blocks: List<Pair<String, Int>> = emptyList()): ParsedRecipe {
+    fun parse(
+        text: String,
+        blocks: List<Pair<String, Int>> = emptyList(),
+        rules: Map<String, String> = emptyMap(),
+    ): ParsedRecipe {
         val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ParsedRecipe("(untitled)")
 
@@ -167,7 +171,7 @@ object OcrParser {
                             unit = prev.unit,
                         )
                     } else {
-                        ingredients.add(parseIngredientLine(l))
+                        ingredients.add(parseIngredientLine(l, rules))
                     }
                 }
                 steps.addAll(parseSteps(stepLines))
@@ -187,7 +191,7 @@ object OcrParser {
                                 unit = prev.unit,
                             )
                         }
-                        else -> ingredients.add(parseIngredientLine(l))
+                        else -> ingredients.add(parseIngredientLine(l, rules))
                     }
                 }
             }
@@ -203,14 +207,20 @@ object OcrParser {
         )
     }
 
-    fun parseIngredientLine(line: String): ParsedIngredient {
+    fun parseIngredientLine(
+        line: String,
+        rules: Map<String, String> = emptyMap(),
+    ): ParsedIngredient {
         val raw = line.trim().replace(BULLET_PREFIX_RE, "")
         // OCR garbles the fraction glyphs, and one garble can mean different
         // fractions on the same card ("%"/"1%" read as 1/4, 1/3 and 1 1/2 on
         // Keith's test card), so those stay visible for the reviewer to fix.
         // The reliable reads get cleaned up: "Vs" is 1/3, "V2" is 1/2, "|" is
         // a 1, and a unit mushed into an "h" ("hcup") is 1/2 of that unit.
-        val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }.flatMap { tok ->
+        // The deterministic amount pass: garbled tokens ("% ", "1%", "Vs",
+        // "V2", "h", "hcup") snap to their fractions in code, hand
+        // corrections first, so the reviewer rarely has to fix an amount.
+        val tokens = AmountFixer.fixLine(raw, rules).split(Regex("\\s+")).filter { it.isNotEmpty() }.flatMap { tok ->
             val bare = tok.trimEnd('.', ',')
             val hun = Regex("^h(cups?|tbsps?|tsps?|tablespoons?|teaspoons?)$", RegexOption.IGNORE_CASE).find(bare)
             when {

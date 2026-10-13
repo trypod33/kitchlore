@@ -3,6 +3,7 @@ package com.trypod33.kitchlore.data.local
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.trypod33.kitchlore.data.local.dao.*
 import com.trypod33.kitchlore.data.local.entity.*
 
@@ -12,9 +13,10 @@ import com.trypod33.kitchlore.data.local.entity.*
         Ingredient::class,
         Step::class,
         NutritionReference::class,
-        GlossaryTerm::class
+        GlossaryTerm::class,
+        CorrectionRule::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -23,6 +25,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun stepDao(): StepDao
     abstract fun nutritionDao(): NutritionDao
     abstract fun glossaryDao(): GlossaryDao
+    abstract fun correctionRuleDao(): CorrectionRuleDao
 
     companion object {
         /**
@@ -34,6 +37,21 @@ abstract class AppDatabase : RoomDatabase() {
          * fallbackToDestructiveMigration: an update must never wipe or crash a
          * real user's saved library.
          */
-        val MIGRATIONS: Array<Migration> = arrayOf()
+        val MIGRATIONS: Array<Migration> = arrayOf(
+            object : Migration(1, 2) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `correction_rules` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`garbled` TEXT NOT NULL, `replacement` TEXT NOT NULL, " +
+                            "`count` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)"
+                    )
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_correction_rules_garbled` " +
+                            "ON `correction_rules` (`garbled`)"
+                    )
+                }
+            }
+        )
     }
 }

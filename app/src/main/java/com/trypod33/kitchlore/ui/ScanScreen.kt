@@ -50,7 +50,9 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.trypod33.kitchlore.data.OcrParser
 import com.trypod33.kitchlore.data.RecipeLlm
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.trypod33.kitchlore.data.ParsedRecipe
 import com.trypod33.kitchlore.data.local.AppDatabase
 import java.io.File
@@ -85,6 +87,13 @@ fun ScanRoute(
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
     val providerFuture = remember { ProcessCameraProvider.getInstance(context) }
+    // Learned measurement corrections, applied by the parser before the AI pass.
+    var rules by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    LaunchedEffect(Unit) {
+        rules = withContext(Dispatchers.IO) {
+            db.correctionRuleDao().getAllOnce().associate { it.garbled to it.replacement }
+        }
+    }
 
     fun enhance(recipe: ParsedRecipe, path: String?) {
         scope.launch {
@@ -103,7 +112,7 @@ fun ScanRoute(
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             busy = true
-            runOcr(context, uri) { p, path ->
+            runOcr(context, uri, rules) { p, path ->
                 busy = false
                 enhance(p, path)
             }
@@ -225,7 +234,7 @@ fun ScanRoute(
                             ContextCompat.getMainExecutor(context),
                             object : ImageCapture.OnImageSavedCallback {
                                 override fun onImageSaved(results: ImageCapture.OutputFileResults) {
-                                    runOcr(context, out) { parsedRecipe, path ->
+                                    runOcr(context, out, rules) { parsedRecipe, path ->
                                         busy = false
                                         enhance(parsedRecipe, path)
                                     }
@@ -260,7 +269,12 @@ fun ScanRoute(
 }
 
 
-private fun runOcr(context: android.content.Context, image: Any, onDone: (ParsedRecipe, String?) -> Unit) {
+private fun runOcr(
+    context: android.content.Context,
+    image: Any,
+    rules: Map<String, String>,
+    onDone: (ParsedRecipe, String?) -> Unit,
+) {
     val input = try {
         when (image) {
             is File -> loadPreppedBitmap(context, Uri.fromFile(image))?.let { InputImage.fromBitmap(it, 0) }
@@ -271,7 +285,7 @@ private fun runOcr(context: android.content.Context, image: Any, onDone: (Parsed
         null
     }
     if (input == null) {
-        onDone(OcrParser.parse(""), null)
+        onDone(OcrParser.parse("", emptyList(), rules), null)
         return
     }
     val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -280,7 +294,7 @@ private fun runOcr(context: android.content.Context, image: Any, onDone: (Parsed
             val blocks = visionText.textBlocks.flatMap { block ->
                 block.lines.map { line -> line.text to (line.boundingBox?.height() ?: 0) }
             }
-            val parsedRecipe = OcrParser.parse(visionText.text, blocks)
+            val parsedRecipe = OcrParser.parse(visionText.text, blocks, rules)
             val path = when (image) {
                 is File -> image.absolutePath
                 is Uri -> copyUriToPhotos(context, image)
@@ -289,7 +303,7 @@ private fun runOcr(context: android.content.Context, image: Any, onDone: (Parsed
             onDone(parsedRecipe, path)
         }
         .addOnFailureListener {
-            onDone(OcrParser.parse(""), null)
+            onDone(OcrParser.parse("", emptyList(), rules), null)
         }
 }
 

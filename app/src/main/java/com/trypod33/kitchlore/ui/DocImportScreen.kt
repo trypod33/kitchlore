@@ -39,6 +39,7 @@ import com.trypod33.kitchlore.data.ParsedRecipe
 import com.trypod33.kitchlore.data.local.AppDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -66,7 +67,10 @@ fun DocImportRoute(
             scope.launch {
                 try {
                     val text = with2(context, uri) { s -> status = s }
-                    parsed = OcrParser.parse(text)
+                    val rules = withContext(Dispatchers.IO) {
+                        db.correctionRuleDao().getAllOnce().associate { it.garbled to it.replacement }
+                    }
+                    parsed = OcrParser.parse(text, emptyList(), rules)
                 } catch (t: Throwable) {
                     error = "Couldn't read that document"
                 }

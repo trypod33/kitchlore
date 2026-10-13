@@ -24,7 +24,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.trypod33.kitchlore.data.AmountFixer
+import com.trypod33.kitchlore.data.OcrParser
 import com.trypod33.kitchlore.data.local.AppDatabase
+import com.trypod33.kitchlore.data.local.entity.CorrectionRule
 import com.trypod33.kitchlore.data.local.entity.Ingredient
 import com.trypod33.kitchlore.data.local.entity.Recipe
 import com.trypod33.kitchlore.data.local.entity.Step
@@ -205,6 +208,43 @@ private suspend fun saveRecipe(
     } else {
         db.recipeDao().update(recipe)
         rid = recipeId
+    }
+    // Measurement corrections: a garbled amount token the user just fixed by
+    // hand becomes a rule ("%" -> "1/3"), applied by the parser before the AI
+    // pass next time, so the same garble only has to be fixed once.
+    if (!isNew) {
+        try {
+            val old = db.ingredientDao().getIngredientsForRecipeOnce(rid)
+            val newTokens = ingDrafts
+                .flatMap { listOf(it.amount, it.unit, it.name) }
+                .joinToString(" ").lowercase().split(Regex("\\s+")).toSet()
+            val fixes = ingDrafts
+                .map { it.amount.trim() }
+                .filter { it.isNotEmpty() && OcrParser.parseAmount(it) != null }
+            if (fixes.isNotEmpty()) {
+                val garbles = mutableListOf<String>()
+                for (o in old) {
+                    o.rawText.split(Regex("\\s+")).map { it.trimEnd('.', ',') }
+                        .filter { AmountFixer.isGarbleAmount(it) && it.lowercase() !in newTokens }
+                        .forEach { garbles.add(it.lowercase()) }
+                }
+                val dao = db.correctionRuleDao()
+                for ((n, g) in garbles.distinct().withIndex()) {
+                    val rep = fixes[n % fixes.size]
+                    val existing = dao.find(g)
+                    dao.upsert(
+                        CorrectionRule(
+                            id = existing?.id ?: 0,
+                            garbled = g,
+                            replacement = rep,
+                            count = (existing?.count ?: 0) + 1,
+                        )
+                    )
+                }
+            }
+        } catch (t: Throwable) {
+            // Correction logging must never break a save.
+        }
     }
     db.ingredientDao().deleteAllForRecipe(rid)
     db.stepDao().deleteAllForRecipe(rid)
