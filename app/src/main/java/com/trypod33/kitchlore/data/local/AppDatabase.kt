@@ -16,7 +16,7 @@ import com.trypod33.kitchlore.data.local.entity.*
         GlossaryTerm::class,
         CorrectionRule::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -50,6 +50,11 @@ abstract class AppDatabase : RoomDatabase() {
                         "CREATE UNIQUE INDEX IF NOT EXISTS `index_correction_rules_garbled` " +
                             "ON `correction_rules` (`garbled`)"
                     )
+                }
+            },
+            object : Migration(2, 3) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE `recipes` ADD COLUMN `tagsCsv` TEXT NOT NULL DEFAULT ''")
                 }
             }
         )

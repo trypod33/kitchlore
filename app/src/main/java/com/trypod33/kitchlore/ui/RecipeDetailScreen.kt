@@ -1,20 +1,30 @@
 package com.trypod33.kitchlore.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -24,14 +34,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Recipe
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun RecipeDetailRoute(db: AppDatabase, recipeId: Long, onBack: () -> Unit, onCook: () -> Unit, onEdit: () -> Unit) {
@@ -67,6 +84,7 @@ fun RecipeDetailScreen(
     var confirmDelete by remember { mutableStateOf(false) }
     var deleteRequested by remember { mutableStateOf(false) }
     var deleted by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(deleteRequested) {
         if (deleteRequested) {
@@ -76,66 +94,186 @@ fun RecipeDetailScreen(
         }
     }
 
+    // Servings: every amount on this page scales by servings / baseServings.
+    val base = recipe?.baseServings ?: 1
+    var servings by remember(recipe?.id, recipe?.baseServings) { mutableStateOf(if (base > 0) base else 1) }
+    val factor = if (base > 0) servings.toDouble() / base else 1.0
+
+    // The 3x5 card: photo covers the whole face with a little "tap" in the
+    // corner, and tapping flips it over, medium fast, into the recipe page.
+    val rotation = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        // nothing to preload; rotation starts at 0
+    }
+
     if (deleted) {
         Column(Modifier.fillMaxSize().padding(20.dp)) {
             Text("Recipe deleted", fontSize = 22.sp, fontWeight = FontWeight.Bold)
             TextButton(onClick = onBack) { Text("Back") }
         }
     } else {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 TextButton(onClick = onBack) { Text("Back") }
-                Row {
-                    TextButton(onClick = onEdit) { Text("Edit") }
-                    TextButton(onClick = { confirmDelete = true }) { Text("Delete") }
-                }
-            }
-            recipe?.let { r ->
-                RecipeThumbnail(r.originalImagePath, Modifier.fillMaxWidth().height(190.dp))
-                Spacer(Modifier.height(14.dp))
-                Text(r.title, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-                val line = servingLine(r)
-                if (line.isNotEmpty()) {
-                    Text(line, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
-                }
-                r.notes?.takeIf { it.isNotBlank() }?.let {
-                    Text(it, fontSize = 15.sp, modifier = Modifier.padding(top = 10.dp))
-                }
-            }
-            Spacer(Modifier.height(18.dp))
-            Button(onClick = onCook, enabled = steps.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
-                Text("Cook mode")
-            }
-            Spacer(Modifier.height(18.dp))
-            Text("Ingredients", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            if (ingredients.isEmpty()) {
-                Text("No ingredients recorded.", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                ingredients.forEach { ing ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { checked[ing.id] = !(checked[ing.id] ?: false) },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(checked = checked[ing.id] ?: false, onCheckedChange = { on -> checked[ing.id] = on })
-                        val amount = ing.amount
-                        val quantity = if (amount != null) formatAmount(amount) + " " else ""
-                        val unitPart = ing.unit ?: ""
-                        val label = (quantity + unitPart + (if (unitPart.isNotEmpty() && quantity.isNotEmpty()) " " else "") + ing.name).trim()
-                        Text(if (label.isEmpty()) ing.rawText else label, fontSize = 16.sp)
+                if (rotation.value >= 90f) {
+                    Row {
+                        TextButton(onClick = onEdit) { Text("Edit") }
+                        TextButton(onClick = { confirmDelete = true }) { Text("Delete") }
                     }
                 }
             }
-            Spacer(Modifier.height(18.dp))
-            Text("Steps", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            if (steps.isEmpty()) {
-                Text("No steps recorded.", style = MaterialTheme.typography.bodyMedium)
+            if (rotation.value < 90f) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth(0.82f)
+                            .aspectRatio(3f / 5f)
+                            .graphicsLayer {
+                                rotationY = rotation.value
+                                cameraDistance = 12 * density
+                            }
+                            .clickable {
+                                scope.launch {
+                                    rotation.animateTo(180f, tween(420, easing = FastOutSlowInEasing))
+                                }
+                            },
+                        shape = RoundedCornerShape(20.dp),
+                    ) {
+                        Box {
+                            RecipeThumbnail(recipe?.originalImagePath, Modifier.fillMaxSize())
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = Color.Black.copy(alpha = 0.45f),
+                                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                            ) {
+                                Text(
+                                    "tap",
+                                    fontSize = 13.sp,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                )
+                            }
+                        }
+                    }
+                }
             } else {
-                steps.forEach { step ->
-                    Text(
-                        "${step.stepNumber}. ${step.instructionText}",
-                        fontSize = 16.sp,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp)
+                        .graphicsLayer { rotationY = rotation.value - 180f },
+                ) {
+                    recipe?.let { r ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RecipeThumbnail(
+                                r.originalImagePath,
+                                Modifier
+                                    .width(96.dp)
+                                    .height(96.dp)
+                                    .clip(RoundedCornerShape(14.dp)),
+                            )
+                            Column(Modifier.padding(start = 14.dp)) {
+                                Text(r.title, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                                val line = servingLine(r)
+                                if (line.isNotEmpty()) {
+                                    Text(line, fontSize = 14.sp)
+                                }
+                            }
+                        }
+                        val tags = r.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                        if (tags.isNotEmpty()) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                tags.take(6).forEach { TagPill(label = it) }
+                            }
+                        }
+                        r.notes?.takeIf { it.isNotBlank() }?.let {
+                            Text(it, fontSize = 15.sp, modifier = Modifier.padding(top = 10.dp))
+                        }
+
+                        // Servings stepper, amounts follow along
+                        Spacer(Modifier.height(14.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (servings > 1) {
+                                        servings -= 1
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) {
+                                                db.recipeDao().update(r.copy(baseServings = servings, dateModified = System.currentTimeMillis()))
+                                            }
+                                        }
+                                    }
+                                },
+                                enabled = servings > 1,
+                            ) { Text("-") }
+                            Text(
+                                "$servings servings" + if (factor != 1.0) "  (x" + String.format(java.util.Locale.US, "%.1f", factor) + ")" else "",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            OutlinedButton(onClick = {
+                                servings += 1
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        db.recipeDao().update(r.copy(baseServings = servings, dateModified = System.currentTimeMillis()))
+                                    }
+                                }
+                            }) { Text("+") }
+                        }
+
+                        Spacer(Modifier.height(16.dp))
+                        Button(onClick = onCook, enabled = steps.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+                            Text("Cook mode")
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Text("Ingredients", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        if (ingredients.isEmpty()) {
+                            Text("No ingredients recorded.", style = MaterialTheme.typography.bodyMedium)
+                        } else {
+                            // Up to two across, so the list stays compact at the top of the card
+                            ingredients.chunked(2).forEach { row ->
+                                Row(Modifier.fillMaxWidth()) {
+                                    row.forEachIndexed { i, ing ->
+                                        Box(Modifier.weight(1f).padding(top = 2.dp, bottom = 2.dp, end = if (i == 0) 8.dp else 0.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Checkbox(
+                                                    checked = checked[ing.id] ?: false,
+                                                    onCheckedChange = { on -> checked[ing.id] = on },
+                                                )
+                                                Text(
+                                                    ingredientLabel(ing.name, ing.amount, ing.unit, ing.rawText, factor),
+                                                    fontSize = 15.sp,
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Text("Steps", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        if (steps.isEmpty()) {
+                            Text("No steps recorded.", style = MaterialTheme.typography.bodyMedium)
+                        } else {
+                            steps.forEach { step ->
+                                Text(
+                                    "${step.stepNumber}. ${step.instructionText}",
+                                    fontSize = 16.sp,
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(24.dp))
+                    }
                 }
             }
         }

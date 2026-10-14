@@ -14,6 +14,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.ui.CookModeRoute
+import com.trypod33.kitchlore.ui.KitchloreTheme
+import com.trypod33.kitchlore.ui.PantryRoute
+import com.trypod33.kitchlore.ui.RecipeHuntRoute
 import com.trypod33.kitchlore.ui.DocImportRoute
 import com.trypod33.kitchlore.ui.EditRecipeScreen
 import com.trypod33.kitchlore.ui.RecipeDetailRoute
@@ -25,15 +28,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val app = application as KitchloreApp
         setContent {
-            KitchloreNav(app.database)
+            KitchloreTheme {
+                KitchloreNav(app.database)
+            }
         }
     }
 }
 
 @Composable
 fun KitchloreNav(db: AppDatabase) {
-    MaterialTheme {
-        Surface(Modifier.fillMaxSize()) {
+    Surface(Modifier.fillMaxSize()) {
             var screen by remember { mutableStateOf("list") }
             when {
                 screen.startsWith("cook:") -> {
@@ -60,6 +64,16 @@ fun KitchloreNav(db: AppDatabase) {
                         onEdit = { screen = "edit:$idStr" },
                     )
                 }
+                screen == "hunt" -> RecipeHuntRoute(
+                    db = db,
+                    onBack = { screen = "list" },
+                    onOpen = { screen = "detail:$it" },
+                )
+                screen == "pantry" -> PantryRoute(
+                    db = db,
+                    onBack = { screen = "list" },
+                    onOpen = { screen = "detail:$it" },
+                )
                 screen == "scan" -> ScanRoute(
                     db = db,
                     mode = "camera",
@@ -83,8 +97,9 @@ fun KitchloreNav(db: AppDatabase) {
                     onScan = { screen = "scan" },
                     onPhoto = { screen = "photo" },
                     onDoc = { screen = "doc" },
+                    onHunt = { screen = "hunt" },
+                    onPantry = { screen = "pantry" },
                 )
             }
         }
     }
-}

@@ -8,6 +8,7 @@ data class Recipe(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
     val baseServings: Int,
+    val tagsCsv: String = "",
     val sourceType: String,
     val sourceNote: String? = null,
     val originalImagePath: String? = null,

@@ -1,6 +1,8 @@
 package com.trypod33.kitchlore.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,6 +51,7 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
     var prep by remember { mutableStateOf("") }
     var cook by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
+    var tags by remember { mutableStateOf("") }
     var ingDrafts by remember { mutableStateOf(listOf(DraftIng("", "", ""))) }
     var stepDrafts by remember { mutableStateOf(listOf(DraftStep(""))) }
     var photoPath by remember { mutableStateOf<String?>(null) }
@@ -63,6 +67,7 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                 prep = r.prepTimeMinutes?.toString() ?: ""
                 cook = r.cookTimeMinutes?.toString() ?: ""
                 notes = r.notes ?: ""
+                tags = r.tagsCsv
                 ingDrafts = db.ingredientDao().getIngredientsForRecipe(recipeId).first().map {
                     DraftIng(it.name, it.amount?.toString() ?: "", it.unit ?: "")
                 }
@@ -170,12 +175,36 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                 }
             }
             TextButton(onClick = { stepDrafts = stepDrafts + DraftStep("") }) { Text("Add step") }
+            Text("Tags", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
+            OutlinedTextField(
+                value = tags,
+                onValueChange = { tags = it },
+                label = { Text("Tags, comma separated") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                listOf("Chicken", "Beef", "Main", "Side", "Appetizer", "Dessert", "Breakfast", "Low salt", "Vegetarian").forEach { t ->
+                    val active = tags.split(",").map { it.trim() }.contains(t)
+                    FilledTonalButton(
+                        onClick = {
+                            val list = tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+                            if (list.contains(t)) list.remove(t) else list.add(t)
+                            tags = list.joinToString(", ")
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                    ) { Text(if (active) "$t \u2713" else t, fontSize = 13.sp, maxLines = 1) }
+                }
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = onCancel) { Text("Cancel") }
                 Button(onClick = {
                     scope.launch {
                         withContext(Dispatchers.IO) {
-                            saveRecipe(db, recipeId, isNew, title, servings, prep, cook, notes, photoPath, ingDrafts, stepDrafts)
+                            saveRecipe(db, recipeId, isNew, title, servings, prep, cook, notes, tags, photoPath, ingDrafts, stepDrafts)
                         }
                     }
                     onDone()
@@ -194,6 +223,7 @@ private suspend fun saveRecipe(
     prep: String,
     cook: String,
     notes: String,
+    tags: String,
     photoPath: String?,
     ingDrafts: List<DraftIng>,
     stepDrafts: List<DraftStep>,
@@ -204,6 +234,7 @@ private suspend fun saveRecipe(
         id = if (isNew) 0L else recipeId,
         title = title.ifBlank { "(untitled)" },
         baseServings = base,
+        tagsCsv = tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.joinToString(", "),
         sourceType = existing?.sourceType ?: "manual",
         sourceNote = existing?.sourceNote,
         originalImagePath = photoPath,

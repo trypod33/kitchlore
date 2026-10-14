@@ -3,11 +3,16 @@ package com.trypod33.kitchlore.ui
 import android.accounts.AccountManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,11 +21,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -31,6 +38,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,6 +50,20 @@ import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.sync.DriveSyncManager
 import kotlinx.coroutines.launch
 
+/** A small round tag, tappable when onTap is given. */
+@Composable
+fun TagPill(label: String, selected: Boolean = false, onTap: (() -> Unit)? = null) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = bg,
+        modifier = if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier,
+    ) {
+        Text(label, fontSize = 13.sp, color = fg, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+    }
+}
+
 @Composable
 fun RecipeListScreen(
     db: AppDatabase,
@@ -48,10 +71,13 @@ fun RecipeListScreen(
     onScan: () -> Unit,
     onPhoto: () -> Unit,
     onDoc: () -> Unit,
+    onHunt: () -> Unit,
+    onPantry: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
+    var selectedTag by remember { mutableStateOf<String?>(null) }
     var syncing by remember { mutableStateOf(false) }
     var syncMsg by remember { mutableStateOf<String?>(null) }
     val recipes by db.recipeDao().getAllRecipes().collectAsState(initial = emptyList())
@@ -92,7 +118,18 @@ fun RecipeListScreen(
     }
 
     val trimmed = query.trim()
-    val filtered = if (trimmed.isEmpty()) recipes else recipes.filter { it.title.contains(trimmed, ignoreCase = true) }
+    val allTags = recipes
+        .flatMap { it.tagsCsv.split(",") }
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+        .sorted()
+    val filtered = recipes.filter { r ->
+        val tagOk = selectedTag == null || r.tagsCsv.split(",").map { it.trim() }.contains(selectedTag)
+        val queryOk = trimmed.isEmpty() || r.title.contains(trimmed, ignoreCase = true)
+        tagOk && queryOk
+    }
+
     Column(Modifier.fillMaxSize()) {
         Text(
             "Kitchlore",
@@ -107,6 +144,19 @@ fun RecipeListScreen(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
             singleLine = true,
         )
+        if (allTags.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                TagPill("All", selected = selectedTag == null) { selectedTag = null }
+                allTags.take(8).forEach { tag ->
+                    TagPill(tag, selected = selectedTag == tag) {
+                        selectedTag = if (selectedTag == tag) null else tag
+                    }
+                }
+            }
+        }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -128,6 +178,17 @@ fun RecipeListScreen(
                 Text(if (syncing) "Syncing" else "Sync", maxLines = 1)
             }
         }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilledTonalButton(onClick = onHunt, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Recipe hunt", maxLines = 1)
+            }
+            FilledTonalButton(onClick = onPantry, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Pantry", maxLines = 1)
+            }
+        }
         syncMsg?.let {
             Text(
                 it,
@@ -138,14 +199,14 @@ fun RecipeListScreen(
         when {
             filtered.isEmpty() && recipes.isEmpty() -> {
                 Text(
-                    "No recipes yet. Scan a page, import a photo or document, or sync the Drive library.",
+                    "No recipes yet. Scan a page, import a photo or document, sync the Drive library, or hunt for one online.",
                     modifier = Modifier.padding(20.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
             filtered.isEmpty() -> {
                 Text(
-                    "No matches for \"$trimmed\"",
+                    "No matches",
                     modifier = Modifier.padding(20.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -153,9 +214,31 @@ fun RecipeListScreen(
             else -> {
                 LazyColumn(Modifier.padding(horizontal = 20.dp)) {
                     items(filtered, key = { it.id }) { recipe ->
-                        Card(Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { onOpen(recipe.id) }) {
-                            Row(Modifier.height(72.dp), verticalAlignment = Alignment.CenterVertically) {
-                                RecipeThumbnail(recipe.originalImagePath, Modifier.fillMaxHeight().width(72.dp))
+                        val interaction = remember { MutableInteractionSource() }
+                        val pressed by interaction.collectIsPressedAsState()
+                        val scale by animateFloatAsState(
+                            targetValue = if (pressed) 0.97f else 1f,
+                            label = "cardScale",
+                        )
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                                .graphicsLayer {
+                                    scaleX = scale
+                                    scaleY = scale
+                                }
+                                .clickable(interactionSource = interaction, indication = null) { onOpen(recipe.id) },
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Row(Modifier.height(92.dp), verticalAlignment = Alignment.CenterVertically) {
+                                RecipeThumbnail(
+                                    recipe.originalImagePath,
+                                    Modifier
+                                        .fillMaxHeight()
+                                        .width(92.dp)
+                                        .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp)),
+                                )
                                 Column(Modifier.padding(12.dp)) {
                                     Text(
                                         recipe.title,
@@ -167,6 +250,16 @@ fun RecipeListScreen(
                                     val line = servingLine(recipe)
                                     if (line.isNotEmpty()) {
                                         Text(line, fontSize = 13.sp, maxLines = 1)
+                                    }
+                                    val tags = recipe.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                                    if (tags.isNotEmpty()) {
+                                        Text(
+                                            tags.take(3).joinToString("  \u00B7  "),
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
                                     }
                                 }
                             }
