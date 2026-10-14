@@ -245,11 +245,11 @@ fun RecipeListScreen(
     onHunt: () -> Unit,
     onPantry: () -> Unit,
     onSettings: () -> Unit,
+    onCategory: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
-    var selectedTag by remember { mutableStateOf<String?>(null) }
     var syncing by remember { mutableStateOf(false) }
     var syncMsg by remember { mutableStateOf<String?>(null) }
     var selectedIng by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -321,17 +321,16 @@ fun RecipeListScreen(
     val canonical = listOf("Chicken", "Beef", "Main", "Side", "Appetizer", "Dessert", "Breakfast", "Low salt", "Vegetarian")
     val tagged = recipes.flatMap { r -> r.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }.map { it to r } }
     val present = tagged.map { it.first }.distinct()
-    val categories = canonical.filter { it in present } + present.filter { it !in canonical }
+    val categories = listOf("All") + canonical.filter { it in present } + present.filter { it !in canonical }
         .sortedByDescending { t -> tagged.count { it.first == t } }
     val catRows = categories.chunked(2)
     val catPhotos = categories.associateWith { t ->
-        tagged.firstOrNull { it.first == t && it.second.originalImagePath != null }?.second?.originalImagePath
+        if (t == "All") recipes.firstOrNull { it.originalImagePath != null }?.originalImagePath
+        else tagged.firstOrNull { it.first == t && it.second.originalImagePath != null }?.second?.originalImagePath
     }
 
     val filtered = recipes.filter { r ->
-        val tagOk = selectedTag == null || r.tagsCsv.split(",").map { it.trim() }.contains(selectedTag)
-        val queryOk = trimmed.isEmpty() || r.title.contains(trimmed, ignoreCase = true)
-        tagOk && queryOk
+        trimmed.isEmpty() || r.title.contains(trimmed, ignoreCase = true)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -489,15 +488,15 @@ fun RecipeListScreen(
                                 label = t,
                                 photoPath = catPhotos[t],
                                 emoji = CATEGORY_EMOJI[t],
-                                selected = selectedTag == t,
-                                onTap = { selectedTag = if (selectedTag == t) null else t },
+                                selected = false,
+                                onTap = { onCategory(t) },
                                 modifier = Modifier.weight(1f),
                             )
                         }
                         if (catRows[i].size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
-                item { SectionLabel(selectedTag ?: "All recipes") }
+                item { SectionLabel("All recipes") }
                 if (filtered.isEmpty()) {
                     item {
                         Text(

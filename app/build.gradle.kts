@@ -39,8 +39,8 @@ android {
         applicationId = "com.trypod33.kitchlore"
         minSdk = 26
         targetSdk = 34
-        versionCode = 28
-        versionName = "0.4.6"
+        versionCode = 29
+        versionName = "0.4.7"
         buildConfigField("String", "MODEL_URL", "\"${prop("modelUrl", "https://huggingface.co/litert-community/SmolLM2-360M-Instruct/resolve/main/SmolLM2_360M_instruct.litertlm")}\"")
     }
 

@@ -16,6 +16,7 @@ import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.ui.CookModeRoute
 import com.trypod33.kitchlore.ui.KitchloreTheme
 import com.trypod33.kitchlore.ui.SettingsScreen
+import com.trypod33.kitchlore.ui.CategoryRoute
 import com.trypod33.kitchlore.ui.ThemePrefs
 import com.trypod33.kitchlore.ui.WebImportRoute
 import com.trypod33.kitchlore.ui.PantryRoute
@@ -99,6 +100,12 @@ fun KitchloreNav(
                     onBack = { screen = "list" },
                     onOpen = { screen = "detail:$it" },
                 )
+                screen.startsWith("category:") -> CategoryRoute(
+                    db = db,
+                    tag = screen.substringAfter("category:"),
+                    onBack = { screen = "list" },
+                    onOpen = { screen = "detail:$it" },
+                )
                 screen == "settings" -> SettingsScreen(
                     onBack = { screen = "list" },
                     themeMode = themeMode,
@@ -137,6 +144,7 @@ fun KitchloreNav(
                     onHunt = { screen = "hunt" },
                     onPantry = { screen = "pantry" },
                     onSettings = { screen = "settings" },
+                    onCategory = { screen = "category:$it" },
                 )
             }
         }
