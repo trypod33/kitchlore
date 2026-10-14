@@ -106,6 +106,7 @@ fun RecipeDetailScreen(
     val factor = if (base > 0) servings.toDouble() / base else 1.0
 
     // The 3x5 card: photo covers the whole face with a little "tap" in the
+    var favorited by remember(recipe?.favorite) { mutableStateOf(recipe?.favorite == true) }
     // corner, and tapping flips it over, medium fast, into the recipe page.
     val rotation = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
@@ -188,13 +189,20 @@ fun RecipeDetailScreen(
                                         }
                                     },
                             )
-                            Column(Modifier.padding(start = 14.dp)) {
+                            Column(Modifier.weight(1f).padding(start = 14.dp)) {
                                 Text(r.title, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                                 val line = servingLine(r)
                                 if (line.isNotEmpty()) {
                                     Text(line, fontSize = 14.sp)
                                 }
                             }
+                            TextButton(
+                                onClick = {
+                                    val next = !(recipe?.favorite ?: false)
+                                    favorited = next
+                                    scope.launch { db.recipeDao().setFavorite(recipeId, next) }
+                                },
+                            ) { Text(if (favorited) "\u2665" else "\u2661", fontSize = 26.sp) }
                         }
                         val tags = r.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
                         if (tags.isNotEmpty()) {

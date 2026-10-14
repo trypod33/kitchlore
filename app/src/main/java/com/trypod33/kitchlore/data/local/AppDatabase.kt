@@ -16,7 +16,7 @@ import com.trypod33.kitchlore.data.local.entity.*
         GlossaryTerm::class,
         CorrectionRule::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -60,6 +60,11 @@ abstract class AppDatabase : RoomDatabase() {
             object : Migration(3, 4) {
                 override fun migrate(db: SupportSQLiteDatabase) {
                     db.execSQL("ALTER TABLE `recipes` ADD COLUMN `scaledServings` INTEGER NOT NULL DEFAULT 0")
+                }
+            },
+            object : Migration(4, 5) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE `recipes` ADD COLUMN `favorite` INTEGER NOT NULL DEFAULT 0")
                 }
             }
         )

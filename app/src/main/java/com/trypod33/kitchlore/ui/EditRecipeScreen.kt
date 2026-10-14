@@ -243,6 +243,7 @@ private suspend fun saveRecipe(
         cookTimeMinutes = cook.toIntOrNull(),
         dateAdded = existing?.dateAdded ?: System.currentTimeMillis(),
         dateModified = System.currentTimeMillis(),
+        favorite = existing?.favorite ?: false,
     )
     val rid: Long
     if (isNew) {
