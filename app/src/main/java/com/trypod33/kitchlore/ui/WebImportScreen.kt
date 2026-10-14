@@ -111,21 +111,21 @@ fun WebImportRoute(db: AppDatabase, initialUrl: String, onBack: () -> Unit, onOp
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
+        Button(
+            onClick = { doImport(url, null) },
+            enabled = !importing,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) { Text(if (importing) "Importing..." else "Import", maxLines = 1, softWrap = false) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = { doImport(url, null) },
-                enabled = !importing,
-                modifier = Modifier.weight(1f).height(48.dp),
-                shape = RoundedCornerShape(14.dp),
-            ) { Text(if (importing) "Importing..." else "Import", maxLines = 1, softWrap = false) }
             OutlinedButton(
                 onClick = { showWebView = true },
-                modifier = Modifier.height(48.dp),
+                modifier = Modifier.weight(1f).height(48.dp),
                 shape = RoundedCornerShape(14.dp),
             ) { Text("WebView", maxLines = 1, softWrap = false) }
             OutlinedButton(
                 onClick = { openInBrowser(url) },
-                modifier = Modifier.height(48.dp),
+                modifier = Modifier.weight(1f).height(48.dp),
                 shape = RoundedCornerShape(14.dp),
             ) { Text("Browser", maxLines = 1, softWrap = false) }
         }
