@@ -17,6 +17,7 @@ import com.trypod33.kitchlore.ui.CookModeRoute
 import com.trypod33.kitchlore.ui.KitchloreTheme
 import com.trypod33.kitchlore.ui.SettingsScreen
 import com.trypod33.kitchlore.ui.CategoryRoute
+import com.trypod33.kitchlore.ui.LegalRoute
 import com.trypod33.kitchlore.ui.ThemePrefs
 import com.trypod33.kitchlore.ui.WebImportRoute
 import com.trypod33.kitchlore.ui.PantryRoute
@@ -112,7 +113,9 @@ fun KitchloreNav(
                     season = season,
                     onThemeMode = onThemeMode,
                     onSeason = onSeason,
+                    onLegal = { screen = "legal" },
                 )
+                screen == "legal" -> LegalRoute(onBack = { screen = "settings" })
                 screen == "pantry" -> PantryRoute(
                     db = db,
                     onBack = { screen = "list" },

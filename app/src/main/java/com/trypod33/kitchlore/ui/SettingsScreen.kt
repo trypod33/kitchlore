@@ -39,6 +39,7 @@ fun SettingsScreen(
     season: String,
     onThemeMode: (String) -> Unit,
     onSeason: (String) -> Unit,
+    onLegal: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -81,6 +82,8 @@ fun SettingsScreen(
                 SettingChip("Autumn", season == "autumn") { onSeason("autumn") }
                 SettingChip("Winter", season == "winter") { onSeason("winter") }
             }
+            SectionLabel("Legal")
+            SettingChip("Privacy, terms and credits", false, onTap = onLegal)
             Text(
                 "Auto follows the calendar month. The seasonal colors stay in both light and dark.",
                 fontSize = 12.sp,
