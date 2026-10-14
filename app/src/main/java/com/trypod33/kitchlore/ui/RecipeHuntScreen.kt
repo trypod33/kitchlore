@@ -287,6 +287,16 @@ private fun ResultCard(content: @Composable () -> Unit) {
     ) { content() }
 }
 
+// Kitchen appliances the hunt understands. The built-in catalog has no
+// appliance tags, so the appliance words step aside for the local and catalog
+// match and stay in the web query, where they steer the results.
+private val APPLIANCES = listOf(
+    "ninja foodi xl", "ninja foodi", "crock pot", "crockpot", "slow cooker",
+    "instant pot", "instapot", "pressure cooker", "air fryer", "dutch oven", "rice cooker",
+)
+
+private fun applianceIn(query: String): String? = APPLIANCES.firstOrNull { query.lowercase().contains(it) }
+
 @Composable
 fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit, onOpenWeb: (String) -> Unit) {
     val context = LocalContext.current
@@ -302,6 +312,8 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var webBlocked by remember { mutableStateOf(false) }
     var offlineHits by remember { mutableStateOf<List<MealDbCacheEntry>>(emptyList()) }
     var searched by remember { mutableStateOf(false) }
+    var appliance by remember { mutableStateOf<String?>(null) }
+    var webLabel by remember { mutableStateOf("More from the web") }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -312,7 +324,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
             value = query,
             onValueChange = { query = it },
             label = { Text("What are you cooking?") },
-            placeholder = { Text("braised pork chops, fried rice...") },
+            placeholder = { Text("braised pork chops, chicken in the ninja foodi...") },
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
@@ -329,16 +341,27 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                     webResults = emptyList()
                     offlineHits = emptyList()
                     webBlocked = false
+                    val applianceHit = applianceIn(q)
+                    appliance = applianceHit
+                    val offlineQuery = applianceHit?.let { a ->
+                        Regex("\\s+").replace(q.lowercase().replace(a, " ").trim(), " ")
+                    } ?: q
+                    val webQuery = applianceHit?.let { a ->
+                        val named = if (a == "instapot") "instant pot" else a
+                        q.replace(a, named, ignoreCase = true).trim()
+                    } ?: q
+                    webLabel = applianceHit?.let { a -> a.replaceFirstChar { it.uppercase() } + " picks from the web" }
+                        ?: "More from the web"
                     scope.launch {
-                        val smart = withContext(Dispatchers.IO) { MealDb.searchSmart(q) }
+                        val smart = withContext(Dispatchers.IO) { MealDb.searchSmart(offlineQuery) }
                         dbHits = smart.hits
                         exactMatch = smart.exact
-                        if (!smart.exact && smart.hits.isEmpty()) {
-                            val web = withContext(Dispatchers.IO) { KeylessSearch.search(q) }
+                        if (applianceHit != null || (!smart.exact && smart.hits.isEmpty())) {
+                            val web = withContext(Dispatchers.IO) { KeylessSearch.search(webQuery) }
                             webResults = web
                             if (web.isEmpty()) {
                                 webBlocked = true
-                                offlineHits = RecipeCache.searchOffline(context, q)
+                                offlineHits = RecipeCache.searchOffline(context, offlineQuery)
                             }
                         }
                         searched = true
@@ -399,7 +422,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                 }
             }
             if (webResults.isNotEmpty()) {
-                item { SectionLabel("More from the web") }
+                item { SectionLabel(webLabel) }
             }
             items(webResults, key = { "web-" + it.url }) { r ->
                 ResultCard {
