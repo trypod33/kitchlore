@@ -1,5 +1,6 @@
 package com.trypod33.kitchlore.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -91,10 +92,16 @@ fun ReviewImportScreen(
                     singleLine = true,
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                 )
-                IconButton(onClick = { if (i > 0) ingredients = ingredients.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }, enabled = i > 0) { Text("\u2191") }
-                IconButton(onClick = { if (i < ingredients.size - 1) ingredients = ingredients.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }, enabled = i < ingredients.size - 1) { Text("\u2193") }
-                IconButton(onClick = { ingredients = ingredients.toMutableList().also { it.removeAt(i) } }) {
-                    Text("x")
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("\u2191", fontSize = 16.sp, modifier = Modifier
+                        .clickable(enabled = i > 0) { if (i > 0) ingredients = ingredients.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }
+                        .padding(2.dp))
+                    Text("x", fontSize = 14.sp, modifier = Modifier
+                        .clickable { ingredients = ingredients.toMutableList().also { it.removeAt(i) } }
+                        .padding(2.dp))
+                    Text("\u2193", fontSize = 16.sp, modifier = Modifier
+                        .clickable(enabled = i < ingredients.size - 1) { if (i < ingredients.size - 1) ingredients = ingredients.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }
+                        .padding(2.dp))
                 }
             }
         }
@@ -112,10 +119,16 @@ fun ReviewImportScreen(
                     },
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                 )
-                IconButton(onClick = { if (i > 0) steps = steps.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }, enabled = i > 0) { Text("\u2191") }
-                IconButton(onClick = { if (i < steps.size - 1) steps = steps.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }, enabled = i < steps.size - 1) { Text("\u2193") }
-                IconButton(onClick = { steps = steps.toMutableList().also { it.removeAt(i) } }) {
-                    Text("x")
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("\u2191", fontSize = 16.sp, modifier = Modifier
+                        .clickable(enabled = i > 0) { if (i > 0) steps = steps.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }
+                        .padding(2.dp))
+                    Text("x", fontSize = 14.sp, modifier = Modifier
+                        .clickable { steps = steps.toMutableList().also { it.removeAt(i) } }
+                        .padding(2.dp))
+                    Text("\u2193", fontSize = 16.sp, modifier = Modifier
+                        .clickable(enabled = i < steps.size - 1) { if (i < steps.size - 1) steps = steps.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }
+                        .padding(2.dp))
                 }
             }
         }
