@@ -361,6 +361,67 @@ private fun preppedForOcr(src: Bitmap): Bitmap {
         val v = (((lum[i] - lo) * 255) / range).coerceIn(0, 255)
         px[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
     }
+    // Adaptive local contrast: on a dim phone shot (a card on a dark table)
+    // a global stretch is not enough, the shadow across one corner still
+    // swamps the glyphs there. Each pixel is contrasted against its own
+    // neighborhood's average instead, so shadowed areas read like bright
+    // ones and the fraction glyphs come out crisp.
+    val mapW = (w / 48).coerceAtLeast(1)
+    val mapH = (h / 48).coerceAtLeast(1)
+    val small = IntArray(mapW * mapH)
+    for (my in 0 until mapH) {
+        val sy = my * h / mapH
+        val ey = (my + 1) * h / mapH
+        for (mx in 0 until mapW) {
+            val sx = mx * w / mapW
+            val ex = (mx + 1) * w / mapW
+            var sum = 0L
+            var n = 0L
+            var y = sy
+            while (y < ey) {
+                var x = sx
+                val row = y * w
+                while (x < ex) {
+                    sum += (px[row + x] and 0xFF).toLong()
+                    n++
+                    x++
+                }
+                y++
+            }
+            small[my * mapW + mx] = (sum / n.coerceAtLeast(1L)).toInt()
+        }
+    }
+    fun meanAt(x: Int, y: Int): Int {
+        val fx = if (w > 1) (x * (mapW - 1)).toFloat() / (w - 1) else 0f
+        val fy = if (h > 1) (y * (mapH - 1)).toFloat() / (h - 1) else 0f
+        val x0 = fx.toInt().coerceIn(0, mapW - 1)
+        val y0 = fy.toInt().coerceIn(0, mapH - 1)
+        val x1 = (x0 + 1).coerceAtMost(mapW - 1)
+        val y1 = (y0 + 1).coerceAtMost(mapH - 1)
+        val ax = fx - x0
+        val ay = fy - y0
+        val a = small[y0 * mapW + x0] and 0xFF
+        val b = small[y0 * mapW + x1] and 0xFF
+        val c = small[y1 * mapW + x0] and 0xFF
+        val d = small[y1 * mapW + x1] and 0xFF
+        return (((a * (1f - ax) + b * ax) * (1f - ay) + (c * (1f - ax) + d * ax) * ay).toInt())
+    }
+    var lo2 = 255
+    var hi2 = 0
+    val adapted = IntArray(px.size)
+    for (i in px.indices) {
+        val v = px[i] and 0xFF
+        val m = meanAt(i % w, i / w)
+        val nv = (((v - m) * 18) / 10 + m).coerceIn(0, 255)
+        adapted[i] = nv
+        if (nv < lo2) lo2 = nv
+        if (nv > hi2) hi2 = nv
+    }
+    val range2 = (hi2 - lo2).coerceAtLeast(1)
+    for (i in px.indices) {
+        val v = (((adapted[i] - lo2) * 255) / range2).coerceIn(0, 255)
+        px[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+    }
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     out.setPixels(px, 0, w, 0, 0, w, h)
     return out
