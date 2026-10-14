@@ -1,6 +1,8 @@
 package com.trypod33.kitchlore.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
@@ -24,6 +26,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -63,10 +67,40 @@ fun PhotoEditSection(path: String?, onPathChange: (String?) -> Unit, modifier: M
         }
     }
 
+    // Camera capture writes straight into the app's private photos folder,
+    // nothing goes to the gallery or MediaStore.
+    var pendingCapturePath by remember { mutableStateOf<String?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val target = pendingCapturePath
+        pendingCapturePath = null
+        if (ok && target != null) {
+            editImage({ decodeFileSampled(target) }, 0f) {}
+        }
+    }
+    fun startCapture() {
+        if (busy) return
+        val dir = File(context.filesDir, "photos")
+        dir.mkdirs()
+        val capture = File(dir, "capture-${System.currentTimeMillis()}.jpg")
+        pendingCapturePath = capture.absolutePath
+        val uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", capture)
+        cameraLauncher.launch(uri)
+    }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startCapture()
+    }
+
     Column(modifier) {
         RecipeThumbnail(path, Modifier.fillMaxWidth().height(170.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 4.dp)) {
             TextButton(onClick = { pickImage.launch("image/*") }, enabled = !busy) { Text("Replace") }
+            TextButton(
+                onClick = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCapture()
+                    else permLauncher.launch(Manifest.permission.CAMERA)
+                },
+                enabled = !busy,
+            ) { Text("Camera") }
             TextButton(
                 onClick = { editImage({ decodeFileSampled(path) }, -90f) {} },
                 enabled = !busy && !path.isNullOrBlank(),
@@ -93,7 +127,16 @@ private fun decodeFileSampled(path: String?): Bitmap? {
         BitmapFactory.decodeFile(path, bounds)
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_DIM) sample *= 2
-        BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+        val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+        val rotation = try {
+            when (ExifInterface(path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+        } catch (t: Throwable) { 0f }
+        if (rotation != 0f) bmp.rotate(rotation) else bmp
     } catch (t: Throwable) {
         null
     }
