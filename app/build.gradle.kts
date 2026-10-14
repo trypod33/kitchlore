@@ -61,7 +61,14 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        create("shared") {
+            storeFile = sharedDebugKeystore
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
+    buildTypes.getByName("release").signingConfig = signingConfigs.getByName("shared")
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
