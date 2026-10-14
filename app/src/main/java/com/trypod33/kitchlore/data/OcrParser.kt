@@ -486,13 +486,43 @@ object OcrParser {
                 prev.timerSeconds ?: timerFor(text),
             )
         } else {
-            out.add(ParsedStep(text, timerFor(text)))
+            if (text.length > 240) {
+                splitBlob(text).forEach { out.add(ParsedStep(it, timerFor(it))) }
+            } else {
+                out.add(ParsedStep(text, timerFor(text)))
+            }
         }
+    }
+
+    // A paragraph the recognizer handed over as a single line still breaks
+    // into steps: a numbered or "Step N." marker starts a fresh step, and a
+    // long blob splits on sentence boundaries when a new sentence opens with
+    // an action verb. Nothing is invented; only what OCR actually saw.
+    private fun splitBlob(text: String): List<String> {
+        val sentences = text.split(Regex("(?<=[.!?])\\s+"))
+        if (sentences.size < 3) return listOf(text)
+        val out = mutableListOf<String>()
+        var cur = ""
+        for (s in sentences) {
+            val startsAction = verbStart(s) || STEP_VERBS.any { s.lowercase().startsWith(it) }
+            if (cur.length > 100 && startsAction) {
+                out.add(cur.trim())
+                cur = s
+            } else {
+                cur = if (cur.isEmpty()) s else "$cur $s"
+            }
+        }
+        if (cur.isNotBlank()) out.add(cur.trim())
+        return if (out.size > 1) out else listOf(text)
     }
 
     private fun parseSteps(lines: List<String>): List<ParsedStep> {
         val out = mutableListOf<ParsedStep>()
-        for (raw in lines) appendToSteps(out, raw)
+        for (raw in lines) {
+            Regex("(?=(?:^|\\s)(?:step\\s*)?\\d{1,2}[.):]\\s+)", RegexOption.IGNORE_CASE)
+                .split(raw)
+                .forEach { appendToSteps(out, it) }
+        }
         return out
     }
 }

@@ -2,6 +2,7 @@ package com.trypod33.kitchlore.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,7 +10,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -105,8 +108,20 @@ fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, onBack: () 
                 }
             }
         }
-        Text(step?.instructionText ?: "No steps", fontSize = 24.sp, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.weight(1f))
+        val paragraphs = remember(step?.instructionText) { splitLongStep(step?.instructionText ?: "") }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            Column(Modifier.verticalScroll(rememberScrollState()).fillMaxWidth()) {
+                paragraphs.forEachIndexed { i, p ->
+                    Text(
+                        p,
+                        fontSize = if (paragraphs.size > 1) 20.sp else 24.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = if (i < paragraphs.size - 1) 12.dp else 0.dp),
+                    )
+                }
+            }
+        }
         val total = step?.timerSeconds
         if (total != null && total > 0) {
             val s = secondsLeft ?: total
@@ -124,4 +139,25 @@ fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, onBack: () 
             }
         }
     }
+}
+
+// A step the recognizer handed over as one long blob still reads well: it
+// breaks into a couple of paragraphs on sentence boundaries for display only,
+// the saved step text is untouched.
+private fun splitLongStep(text: String): List<String> {
+    if (text.length <= 320) return listOf(text)
+    val sentences = text.split(Regex("(?<=[.!?])\\s+"))
+    if (sentences.size < 3) return listOf(text)
+    val out = mutableListOf<String>()
+    var cur = ""
+    for (s in sentences) {
+        if (cur.length + s.length > 260 && cur.isNotEmpty()) {
+            out.add(cur.trim())
+            cur = s
+        } else {
+            cur = if (cur.isEmpty()) s else "$cur $s"
+        }
+    }
+    if (cur.isNotBlank()) out.add(cur.trim())
+    return if (out.size > 1) out else listOf(text)
 }

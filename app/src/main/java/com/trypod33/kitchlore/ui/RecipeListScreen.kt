@@ -244,6 +244,7 @@ fun RecipeListScreen(
     onDoc: () -> Unit,
     onHunt: () -> Unit,
     onPantry: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -377,6 +378,12 @@ fun RecipeListScreen(
             }
             FilledTonalButton(onClick = onPantry, contentPadding = PaddingValues(horizontal = 10.dp)) {
                 Text("Pantry", maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = onSettings,
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                Text("Settings", maxLines = 1)
             }
         }
         syncMsg?.let {

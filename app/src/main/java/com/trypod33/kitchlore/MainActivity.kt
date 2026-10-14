@@ -15,6 +15,8 @@ import androidx.compose.ui.Modifier
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.ui.CookModeRoute
 import com.trypod33.kitchlore.ui.KitchloreTheme
+import com.trypod33.kitchlore.ui.SettingsScreen
+import com.trypod33.kitchlore.ui.ThemePrefs
 import com.trypod33.kitchlore.ui.WebImportRoute
 import com.trypod33.kitchlore.ui.PantryRoute
 import com.trypod33.kitchlore.ui.RecipeHuntRoute
@@ -33,15 +35,31 @@ class MainActivity : ComponentActivity() {
         val sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT)?.trim()
         val initialScreen = if (sharedText != null && sharedText.startsWith("http")) "import:" + sharedText else "list"
         setContent {
-            KitchloreTheme {
-                KitchloreNav(app.database, initialScreen)
+            var themeMode by remember { mutableStateOf(ThemePrefs.mode(this)) }
+            var season by remember { mutableStateOf(ThemePrefs.season(this)) }
+            KitchloreTheme(themeMode, season) {
+                KitchloreNav(
+                    app.database,
+                    initialScreen,
+                    themeMode,
+                    season,
+                    onThemeMode = { ThemePrefs.setMode(this, it); themeMode = it },
+                    onSeason = { ThemePrefs.setSeason(this, it); season = it },
+                )
             }
         }
     }
 }
 
 @Composable
-fun KitchloreNav(db: AppDatabase, initialScreen: String = "list") {
+fun KitchloreNav(
+    db: AppDatabase,
+    initialScreen: String = "list",
+    themeMode: String,
+    season: String,
+    onThemeMode: (String) -> Unit,
+    onSeason: (String) -> Unit,
+) {
     Surface(Modifier.fillMaxSize()) {
             var screen by remember { mutableStateOf(initialScreen) }
             when {
@@ -81,6 +99,13 @@ fun KitchloreNav(db: AppDatabase, initialScreen: String = "list") {
                     onBack = { screen = "list" },
                     onOpen = { screen = "detail:$it" },
                 )
+                screen == "settings" -> SettingsScreen(
+                    onBack = { screen = "list" },
+                    themeMode = themeMode,
+                    season = season,
+                    onThemeMode = onThemeMode,
+                    onSeason = onSeason,
+                )
                 screen == "pantry" -> PantryRoute(
                     db = db,
                     onBack = { screen = "list" },
@@ -111,6 +136,7 @@ fun KitchloreNav(db: AppDatabase, initialScreen: String = "list") {
                     onDoc = { screen = "doc" },
                     onHunt = { screen = "hunt" },
                     onPantry = { screen = "pantry" },
+                    onSettings = { screen = "settings" },
                 )
             }
         }
