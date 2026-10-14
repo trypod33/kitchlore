@@ -37,8 +37,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-private class DraftIng(var name: String, var amount: String, var unit: String)
-private class DraftStep(var text: String)
+private data class DraftIng(val name: String, val amount: String, val unit: String)
+private data class DraftStep(val text: String)
 
 @Composable
 fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: () -> Unit, onCancel: () -> Unit) {
@@ -122,21 +122,21 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = d.name,
-                        onValueChange = { d.name = it; ingDrafts = ingDrafts.toList() },
+                        onValueChange = { v -> ingDrafts = ingDrafts.toMutableList().also { it[i] = d.copy(name = v) } },
                         label = { Text("Name") },
                         modifier = Modifier.weight(1.6f),
                         singleLine = true,
                     )
                     OutlinedTextField(
                         value = d.amount,
-                        onValueChange = { d.amount = it; ingDrafts = ingDrafts.toList() },
+                        onValueChange = { v -> ingDrafts = ingDrafts.toMutableList().also { it[i] = d.copy(amount = v) } },
                         label = { Text("Amt") },
                         modifier = Modifier.weight(0.8f),
                         singleLine = true,
                     )
                     OutlinedTextField(
                         value = d.unit,
-                        onValueChange = { d.unit = it; ingDrafts = ingDrafts.toList() },
+                        onValueChange = { v -> ingDrafts = ingDrafts.toMutableList().also { it[i] = d.copy(unit = v) } },
                         label = { Text("Unit") },
                         modifier = Modifier.weight(0.8f),
                         singleLine = true,
@@ -151,7 +151,7 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                     Text("${i + 1}.", fontSize = 16.sp)
                     OutlinedTextField(
                         value = d.text,
-                        onValueChange = { d.text = it; stepDrafts = stepDrafts.toList() },
+                        onValueChange = { v -> stepDrafts = stepDrafts.toMutableList().also { it[i] = d.copy(text = v) } },
                         label = { Text("Step ${i + 1}") },
                         modifier = Modifier.weight(1f),
                     )

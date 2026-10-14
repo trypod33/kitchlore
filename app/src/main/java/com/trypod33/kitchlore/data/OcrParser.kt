@@ -55,6 +55,7 @@ object OcrParser {
         "sauté", "simmer", "boil", "place", "spread", "cover", "remove",
         "serve", "top", "drizzle", "season", "chop", "dice", "mince",
         "slice", "grease", "line", "knead", "marinate", "refrigerate",
+        "seal", "soften", "whip",
         "transfer", "combine", "layer", "sprinkle", "melt", "brown",
         "garnish", "rest", "carve", "brush", "coat", "press", "shape",
         "roll", "cut", "let",
@@ -177,11 +178,27 @@ object OcrParser {
                 steps.addAll(parseSteps(stepLines))
             }
             else -> {
+                var lastWasStep = false
                 lines.forEachIndexed { i, l ->
                     if (i < startIdx || i == titleLineIdx || isNoise(l)) return@forEachIndexed
                     when {
-                        looksLikeStep(l) -> steps.add(ParsedStep(stripStepPrefix(l), timerFor(stripStepPrefix(l))))
+                        looksLikeStep(l) -> {
+                            appendToSteps(steps, l)
+                            lastWasStep = true
+                        }
                         isIngredientNoise(l) -> {}
+                        // A lowercase tail with no amount straight after an
+                        // open step is that step's continuation, not an
+                        // ingredient.
+                        lastWasStep &&
+                            steps.isNotEmpty() &&
+                            l.trim().firstOrNull()?.isUpperCase() != true &&
+                            !LEADING_QTY_RE.containsMatchIn(l.trim()) &&
+                            !LEADING_QTY_ALT_RE.containsMatchIn(l.trim()) &&
+                            !SENTENCE_END_RE.containsMatchIn(steps.last().instructionText.trimEnd()) -> {
+                            appendToSteps(steps, l)
+                            lastWasStep = true
+                        }
                         isContinuation(l, ingredients.lastOrNull()) -> {
                             val prev = ingredients.last()
                             ingredients[ingredients.size - 1] = ParsedIngredient(
@@ -190,8 +207,12 @@ object OcrParser {
                                 amount = prev.amount,
                                 unit = prev.unit,
                             )
+                            lastWasStep = false
                         }
-                        else -> ingredients.add(parseIngredientLine(l, rules))
+                        else -> {
+                            ingredients.add(parseIngredientLine(l, rules))
+                            lastWasStep = false
+                        }
                     }
                 }
             }
@@ -429,28 +450,49 @@ object OcrParser {
         "dip", "coat", "toss", "wait", "let", "salt",
     )
 
+    private val SENTENCE_END_RE = Regex("[.!?]$")
+
+    private fun verbStart(text: String): Boolean {
+        val lower = text.lowercase()
+        if (ACTION_VERBS.any { lower.startsWith(it) }) return true
+        // OCR often glues one junk character onto the first word ("BBake",
+        // "Bwhip"); the word minus its first letter still names the action.
+        val first = lower.split(Regex("\\s+")).firstOrNull() ?: return false
+        val trimmed = first.drop(1)
+        return trimmed.length >= 3 && ACTION_VERBS.any { trimmed.startsWith(it) }
+    }
+
+    // OCR lines split steps mid-sentence and two-column cards scramble their
+    // reading order. A line joins the previous step when it starts lowercase
+    // or the previous step is still open (no sentence-ending punctuation); a
+    // capitalized verb line starts a fresh step. Nothing is invented: only
+    // lines the recognizer actually saw are stitched back together.
+    private fun appendToSteps(out: MutableList<ParsedStep>, raw: String) {
+        val l = raw.trim()
+        if (l.isEmpty() || isNoise(l)) return
+        val hasNum = NUM_PREFIX_RE.containsMatchIn(l)
+        val text = stripStepPrefix(l)
+        if (text.isBlank()) return
+        val words = text.split(Regex("\\s+"))
+        val firstWord = words[0].trimEnd('.', '!', '?', ',').lowercase()
+        if (words.size == 1 && !STEP_VERBS.contains(firstWord)) return
+        val prev = out.lastOrNull()
+        val prevOpen = prev != null && !SENTENCE_END_RE.containsMatchIn(prev.instructionText.trimEnd())
+        val startsNew = hasNum || prev == null ||
+            (words[0].firstOrNull()?.isUpperCase() == true && (!prevOpen || verbStart(text)))
+        if (!startsNew && prev != null) {
+            out[out.size - 1] = ParsedStep(
+                (prev.instructionText + " " + text).trim(),
+                prev.timerSeconds ?: timerFor(text),
+            )
+        } else {
+            out.add(ParsedStep(text, timerFor(text)))
+        }
+    }
+
     private fun parseSteps(lines: List<String>): List<ParsedStep> {
         val out = mutableListOf<ParsedStep>()
-        for (raw in lines) {
-            val l = raw.trim()
-            if (l.isEmpty() || isNoise(l)) continue
-            val hasNum = NUM_PREFIX_RE.containsMatchIn(l)
-            val text = stripStepPrefix(l)
-            if (text.isBlank()) continue
-            val words = text.split(Regex("\\s+"))
-            if (words.size == 1 && !STEP_VERBS.contains(words[0].trimEnd('.', '!', '?').lowercase())) continue
-            if (hasNum || out.isEmpty()) {
-                out.add(ParsedStep(text, timerFor(text)))
-            } else {
-                val last = out.removeAt(out.size - 1)
-                out.add(
-                    ParsedStep(
-                        (last.instructionText + " " + text).trim(),
-                        last.timerSeconds ?: timerFor(text),
-                    )
-                )
-            }
-        }
+        for (raw in lines) appendToSteps(out, raw)
         return out
     }
 }
