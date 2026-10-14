@@ -109,8 +109,81 @@ fun formatFractional(a: Double): String {
     return String.format(java.util.Locale.US, "%.1f", a)
 }
 
+private val FRAC_CHARS = mapOf(
+    '\u00BC' to 1.0 / 4,
+    '\u00BD' to 1.0 / 2,
+    '\u00BE' to 3.0 / 4,
+    '\u2153' to 1.0 / 3,
+    '\u2154' to 2.0 / 3,
+    '\u2155' to 1.0 / 5,
+    '\u2156' to 2.0 / 5,
+    '\u2157' to 3.0 / 5,
+    '\u2158' to 4.0 / 5,
+    '\u2159' to 1.0 / 6,
+    '\u215A' to 5.0 / 6,
+    '\u215B' to 1.0 / 8,
+    '\u215C' to 3.0 / 8,
+    '\u215D' to 5.0 / 8,
+    '\u215E' to 7.0 / 8,
+    '\u2150' to 1.0 / 7,
+    '\u2151' to 1.0 / 9,
+    '\u2152' to 1.0 / 10,
+)
+
+/** One quantity token: "2", "0.5", "1/2", "1 1/2" pieces handled by the caller, "1\u00BD" mixed forms. */
+private fun quantityTokenValue(t: String): Double? {
+    if (t.isEmpty()) return null
+    if (t.length == 1) return FRAC_CHARS[t[0]]
+    var i = 0
+    var whole = 0.0
+    var sawDigit = false
+    while (i < t.length && (t[i].isDigit() || t[i] == '.')) {
+        sawDigit = true
+        i++
+    }
+    if (sawDigit) {
+        whole = t.substring(0, i).toDoubleOrNull() ?: return null
+    }
+    if (i < t.length) {
+        if (t[i] == '/') {
+            val den = t.substring(i + 1).toDoubleOrNull() ?: return null
+            if (den == 0.0) return null
+            return whole / den
+        }
+        val frac = FRAC_CHARS[t[i]] ?: return null
+        if (i == t.length - 1) return whole + frac
+        return null
+    }
+    return if (sawDigit) whole else null
+}
+
+/**
+ * Scales the quantity that opens a line, however it was written ("1 1/2 cups
+ * rice" doubled becomes "3 cups rice", "\u00BC cup" tripled becomes "\u00BE cup"),
+ * leaving the unit and name untouched. Lines that do not open with a quantity
+ * come back unchanged.
+ */
+fun scaleQuantityText(text: String, factor: Double): String {
+    if (factor == 1.0 || text.isBlank()) return text
+    val tokens = text.trim().split(Regex("\\s+"))
+    var value = 0.0
+    var n = 0
+    for (t in tokens) {
+        val v = quantityTokenValue(t) ?: break
+        value += v
+        n++
+    }
+    if (n == 0) return text
+    val scaled = formatFractional(value * factor)
+    val rest = tokens.drop(n).joinToString(" ")
+    return listOf(scaled, rest).filter { it.isNotBlank() }.joinToString(" ")
+}
+
 /** One tidy line for an ingredient row: quantity, unit, name (falls back to the raw OCR line). */
 fun ingredientLabel(name: String, amount: Double?, unit: String?, rawText: String, factor: Double = 1.0): String {
+    // When the recipe is scaled, rewrite the quantity in the raw line itself so
+    // every recipe scales, parsed or not.
+    if (factor != 1.0 && rawText.isNotBlank()) return scaleQuantityText(rawText, factor)
     val a = amount
     if (a == null) return rawText
     val qty = formatFractional(scaleAmount(a, factor))

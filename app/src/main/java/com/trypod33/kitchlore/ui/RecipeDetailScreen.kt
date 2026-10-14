@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -94,9 +95,14 @@ fun RecipeDetailScreen(
         }
     }
 
-    // Servings: every amount on this page scales by servings / baseServings.
+    // Servings: every amount scales by servings / baseServings. The recipe's
+    // own base count is never rewritten; the chosen serving count saves in its
+    // own column (scaledServings), so the stored amounts always stay matched
+    // to the stored base.
     val base = recipe?.baseServings ?: 1
-    var servings by remember(recipe?.id, recipe?.baseServings) { mutableStateOf(if (base > 0) base else 1) }
+    var servings by remember(recipe?.id, recipe?.baseServings, recipe?.scaledServings) {
+        mutableStateOf(recipe?.scaledServings?.takeIf { it > 0 } ?: if (base > 0) base else 1)
+    }
     val factor = if (base > 0) servings.toDouble() / base else 1.0
 
     // The 3x5 card: photo covers the whole face with a little "tap" in the
@@ -175,7 +181,12 @@ fun RecipeDetailScreen(
                                 Modifier
                                     .width(96.dp)
                                     .height(96.dp)
-                                    .clip(RoundedCornerShape(14.dp)),
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable {
+                                        scope.launch {
+                                            rotation.animateTo(0f, tween(420, easing = FastOutSlowInEasing))
+                                        }
+                                    },
                             )
                             Column(Modifier.padding(start = 14.dp)) {
                                 Text(r.title, fontSize = 26.sp, fontWeight = FontWeight.Bold)
@@ -188,10 +199,13 @@ fun RecipeDetailScreen(
                         val tags = r.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
                         if (tags.isNotEmpty()) {
                             Row(
-                                Modifier.fillMaxWidth().padding(top = 10.dp),
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp)
+                                    .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                tags.take(6).forEach { TagPill(label = it) }
+                                tags.forEach { TagPill(label = it) }
                             }
                         }
                         r.notes?.takeIf { it.isNotBlank() }?.let {
@@ -207,7 +221,7 @@ fun RecipeDetailScreen(
                                         servings -= 1
                                         scope.launch {
                                             withContext(Dispatchers.IO) {
-                                                db.recipeDao().update(r.copy(baseServings = servings, dateModified = System.currentTimeMillis()))
+                                                db.recipeDao().update(r.copy(scaledServings = servings, dateModified = System.currentTimeMillis()))
                                             }
                                         }
                                     }
@@ -215,7 +229,7 @@ fun RecipeDetailScreen(
                                 enabled = servings > 1,
                             ) { Text("-") }
                             Text(
-                                "$servings servings" + if (factor != 1.0) "  (x" + String.format(java.util.Locale.US, "%.1f", factor) + ")" else "",
+                                "$servings servings" + if (factor != 1.0) "  (from $base)" else "",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                             )
@@ -223,7 +237,7 @@ fun RecipeDetailScreen(
                                 servings += 1
                                 scope.launch {
                                     withContext(Dispatchers.IO) {
-                                        db.recipeDao().update(r.copy(baseServings = servings, dateModified = System.currentTimeMillis()))
+                                        db.recipeDao().update(r.copy(scaledServings = servings, dateModified = System.currentTimeMillis()))
                                     }
                                 }
                             }) { Text("+") }

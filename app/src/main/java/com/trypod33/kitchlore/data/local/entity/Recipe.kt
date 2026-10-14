@@ -9,6 +9,7 @@ data class Recipe(
     val title: String,
     val baseServings: Int,
     val tagsCsv: String = "",
+    val scaledServings: Int = 0,
     val sourceType: String,
     val sourceNote: String? = null,
     val originalImagePath: String? = null,

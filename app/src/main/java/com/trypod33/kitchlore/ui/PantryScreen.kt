@@ -140,13 +140,13 @@ fun PantryRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit) {
                         val recipes = db.recipeDao().getAllRecipesOnce()
                         recipes.map { r ->
                             val names = (ings[r.id] ?: emptyList()).map { it.name.lowercase() }
-                            r to pantry.count { p -> names.any { it.contains(p.lowercase()) } }
+                            r to pantry.count { p -> names.any { matchesPantryWord(it, p) } }
                         }.filter { it.second > 0 }.sortedByDescending { it.second }
                     }
                     val web = withContext(Dispatchers.IO) {
                         val counts = HashMap<String, Int>()
                         val byId = HashMap<String, MealDb.Hit>()
-                        pantry.take(3).forEach { p ->
+                        pantry.take(4).forEach { p ->
                             MealDb.byIngredient(p).forEach { h ->
                                 counts[h.id] = (counts[h.id] ?: 0) + 1
                                 byId.putIfAbsent(h.id, h)
@@ -221,4 +221,10 @@ private fun LocalRow(recipe: com.trypod33.kitchlore.data.local.entity.Recipe?, c
             }
         }
     }
+}
+
+/** Whole-word pantry match, so "pepper" does not ride on "bell pepper" alone standing in for every pepper dish, and plurals still count. */
+internal fun matchesPantryWord(name: String, pantryItem: String): Boolean {
+    val pattern = Regex("\\b" + Regex.escape(pantryItem.lowercase().trim()) + "(es|s)?\\b")
+    return pattern.containsMatchIn(name.trim())
 }
