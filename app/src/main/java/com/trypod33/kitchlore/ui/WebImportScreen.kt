@@ -9,12 +9,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -49,7 +51,7 @@ fun WebImportRoute(db: AppDatabase, initialUrl: String, onBack: () -> Unit, onOp
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf(initialUrl) }
     var status by remember { mutableStateOf<String?>(null) }
-    var showWebView by remember { mutableStateOf(initialUrl.isBlank()) }
+    var showWebView by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
 
     fun openInBrowser(target: String) {
@@ -97,7 +99,7 @@ fun WebImportRoute(db: AppDatabase, initialUrl: String, onBack: () -> Unit, onOp
         }
     }
 
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("Back") }
             Text("Import from web", fontSize = 24.sp, fontWeight = FontWeight.Bold)
@@ -110,11 +112,22 @@ fun WebImportRoute(db: AppDatabase, initialUrl: String, onBack: () -> Unit, onOp
             singleLine = true,
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { doImport(url, null) }, enabled = !importing, modifier = Modifier.weight(1f)) {
-                Text(if (importing) "Importing..." else "Import")
-            }
-            OutlinedButton(onClick = { showWebView = true }) { Text("WebView") }
-            OutlinedButton(onClick = { openInBrowser(url) }) { Text("Browser") }
+            Button(
+                onClick = { doImport(url, null) },
+                enabled = !importing,
+                modifier = Modifier.weight(1f).height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(if (importing) "Importing..." else "Import", maxLines = 1, softWrap = false) }
+            OutlinedButton(
+                onClick = { showWebView = true },
+                modifier = Modifier.height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("WebView", maxLines = 1, softWrap = false) }
+            OutlinedButton(
+                onClick = { openInBrowser(url) },
+                modifier = Modifier.height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("Browser", maxLines = 1, softWrap = false) }
         }
         status?.let { Text(it, fontSize = 15.sp) }
         if (showWebView) {
@@ -163,9 +176,9 @@ private fun WebViewImportBlock(
                         }
                     }
                 },
-                modifier = Modifier.weight(1f),
-            ) { Text(if (loaded) "Import again" else "Import this page") }
-            OutlinedButton(onClick = onOpenInBrowser) { Text("Browser") }
+                modifier = Modifier.weight(1f).height(46.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(if (loaded) "Import again" else "Import this page", maxLines = 1, softWrap = false) }
         }
         Text(
             "Wait for the page to finish loading, then tap Import. Some sites need a moment.",
@@ -176,12 +189,11 @@ private fun WebViewImportBlock(
             AndroidView(
                 factory = {
                     webView.apply {
-                        settings.userAgentString = null
                         loadUrl(url)
                     }
                 },
                 update = {},
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.weight(1f),
             )
         }
     }

@@ -5,7 +5,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -13,11 +15,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -37,6 +42,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trypod33.kitchlore.data.KeylessSearch
@@ -261,6 +267,27 @@ fun WebThumb(url: String?, modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text.uppercase(),
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.2.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+    )
+}
+
+@Composable
+private fun ResultCard(content: @Composable () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) { content() }
+}
+
+@Composable
 fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit, onOpenWeb: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -276,7 +303,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var offlineHits by remember { mutableStateOf<List<MealDbCacheEntry>>(emptyList()) }
     var searched by remember { mutableStateOf(false) }
 
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("Back") }
             Text("Recipe hunt", fontSize = 24.sp, fontWeight = FontWeight.Bold)
@@ -284,7 +311,9 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            label = { Text("Chicken with rice, braised pork chops...") },
+            label = { Text("What are you cooking?") },
+            placeholder = { Text("braised pork chops, fried rice...") },
+            shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
@@ -305,7 +334,6 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                         dbHits = smart.hits
                         exactMatch = smart.exact
                         if (!smart.exact && smart.hits.isEmpty()) {
-                            // Keyless web search, best effort, honest when blocked
                             val web = withContext(Dispatchers.IO) { KeylessSearch.search(q) }
                             webResults = web
                             if (web.isEmpty()) {
@@ -318,21 +346,30 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                     }
                 },
                 enabled = !loading,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).height(48.dp),
+                shape = RoundedCornerShape(14.dp),
             ) { Text(if (loading) "Searching..." else "Search") }
-            OutlinedButton(onClick = { onOpenWeb("") }, enabled = !loading) { Text("Paste link") }
+            OutlinedButton(
+                onClick = { onOpenWeb("") },
+                enabled = !loading,
+                modifier = Modifier.height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("Paste link") }
         }
-        message?.let { Text(it, fontSize = 15.sp) }
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        message?.let {
+            Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (searched && !exactMatch && dbHits.isNotEmpty()) {
-                item {
-                    Text("No exact match, showing related", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                }
+                item { SectionLabel("Close enough") }
+            } else if (searched && exactMatch && dbHits.isNotEmpty()) {
+                item { SectionLabel("Found these") }
             }
             items(dbHits, key = { "db-" + it.id }) { hit ->
-                Card(Modifier.fillMaxWidth()) {
+                ResultCard {
                     Row(
-                        Modifier.height(88.dp).clickable(enabled = importingId == null) {
+                        Modifier.height(88.dp).fillMaxWidth().clickable(enabled = importingId == null) {
                             importingId = hit.id
                             message = "Importing ${hit.name}..."
                             scope.launch {
@@ -347,23 +384,26 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                         },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        WebThumb(hit.thumb, Modifier.width(88.dp).fillMaxHeight())
-                        Column(Modifier.padding(12.dp)) {
+                        WebThumb(
+                            hit.thumb,
+                            Modifier.width(88.dp).fillMaxHeight(),
+                        )
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             Text(hit.name, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                             val sub = listOfNotNull(hit.category, hit.area).joinToString(" \u00B7 ")
-                            if (sub.isNotEmpty()) Text(sub, fontSize = 13.sp)
+                            if (sub.isNotEmpty()) {
+                                Text(sub, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
             }
             if (webResults.isNotEmpty()) {
-                item {
-                    Text("More options", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
-                }
+                item { SectionLabel("More from the web") }
             }
             items(webResults, key = { "web-" + it.url }) { r ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(
+                ResultCard {
+                    Row(
                         Modifier.fillMaxWidth()
                             .clickable(enabled = importingUrl == null && importingId == null) {
                                 importingUrl = r.url
@@ -386,27 +426,49 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                                     }
                                 }
                             }
-                            .padding(12.dp)
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                        Text(hostOf(r.url) + "  \u00B7  tap to add", fontSize = 13.sp, maxLines = 1)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    r.title.trim().take(1).uppercase(),
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                )
+                            }
+                        }
+                        Column(Modifier.padding(start = 12.dp)) {
+                            Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                            Text(
+                                hostOf(r.url) + "  \u00B7  tap to add",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
                     }
                 }
             }
             if (webBlocked) {
                 item {
+                    SectionLabel("Offline picks")
                     Text(
-                        "Web search would not answer an automated request right now, so these come from the built-in catalog.",
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(top = 6.dp),
+                        "Web search would not answer just now, so these come from the built-in catalog.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text("Offline picks", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
                 }
             }
             items(offlineHits, key = { "off-" + it.id }) { e ->
-                Card(Modifier.fillMaxWidth()) {
+                ResultCard {
                     Row(
-                        Modifier.height(72.dp).clickable(enabled = importingId == null) {
+                        Modifier.height(72.dp).fillMaxWidth().clickable(enabled = importingId == null) {
                             importingId = e.id
                             message = "Importing ${e.name}..."
                             scope.launch {
@@ -414,7 +476,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                                 if (newId > 0) {
                                     onOpen(newId)
                                 } else {
-                                    message = "Needs a connection to import. Open in browser instead?"
+                                    message = "Needs a connection to import."
                                     importingId = null
                                 }
                             }
@@ -422,16 +484,22 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         WebThumb(e.thumb, Modifier.width(72.dp).fillMaxHeight())
-                        Column(Modifier.padding(12.dp)) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             Text(e.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                            Text(e.category, fontSize = 13.sp)
+                            Text(e.category, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
             }
             if (searched && !loading && dbHits.isEmpty() && webResults.isEmpty() && offlineHits.isEmpty()) {
                 item {
-                    Text("Nothing found for that. Try fewer words, or paste a link to a recipe page.", fontSize = 15.sp)
+                    Text(
+                        "Nothing found for that.\nTry fewer words, or paste a link to a recipe page.",
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                    )
                 }
             }
         }
