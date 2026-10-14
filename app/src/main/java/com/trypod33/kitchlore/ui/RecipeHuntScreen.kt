@@ -39,11 +39,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.content.Intent
-import android.net.Uri
 import com.trypod33.kitchlore.data.KeylessSearch
 import com.trypod33.kitchlore.data.OcrParser
+import com.trypod33.kitchlore.data.HtmlRecipeParser
 import com.trypod33.kitchlore.data.MealDbCacheEntry
+import com.trypod33.kitchlore.data.fetchPage
+import com.trypod33.kitchlore.data.insertWebRecipe
 import com.trypod33.kitchlore.data.RecipeCache
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Ingredient
@@ -266,6 +267,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var query by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var importingId by remember { mutableStateOf<String?>(null) }
+    var importingUrl by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var dbHits by remember { mutableStateOf<List<MealDb.Hit>>(emptyList()) }
     var exactMatch by remember { mutableStateOf(true) }
@@ -273,16 +275,6 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var webBlocked by remember { mutableStateOf(false) }
     var offlineHits by remember { mutableStateOf<List<MealDbCacheEntry>>(emptyList()) }
     var searched by remember { mutableStateOf(false) }
-
-    fun openInBrowser(q: String) {
-        try {
-            context.startActivity(
-                Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + URLEncoder.encode(q, "UTF-8")))
-            )
-        } catch (t: Throwable) {
-            message = "No browser app found."
-        }
-    }
 
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -328,8 +320,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                 enabled = !loading,
                 modifier = Modifier.weight(1f),
             ) { Text(if (loading) "Searching..." else "Search") }
-            OutlinedButton(onClick = { openInBrowser(query.trim()) }, enabled = !loading) { Text("Open in browser") }
-            OutlinedButton(onClick = { onOpenWeb("") }) { Text("Paste link") }
+            OutlinedButton(onClick = { onOpenWeb("") }, enabled = !loading) { Text("Paste link") }
         }
         message?.let { Text(it, fontSize = 15.sp) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -367,21 +358,45 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
             }
             if (webResults.isNotEmpty()) {
                 item {
-                    Text("From the web", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                    Text("More options", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
                 }
             }
             items(webResults, key = { "web-" + it.url }) { r ->
                 Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.fillMaxWidth().clickable { onOpenWeb(r.url) }.padding(12.dp)) {
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .clickable(enabled = importingUrl == null && importingId == null) {
+                                importingUrl = r.url
+                                message = "Bringing in ${r.title}..."
+                                scope.launch {
+                                    val parsed = withContext(Dispatchers.IO) {
+                                        fetchPage(r.url)?.let { HtmlRecipeParser.parse(it) }
+                                    }
+                                    if (parsed != null && (parsed.ingredients.isNotEmpty() || parsed.steps.isNotEmpty())) {
+                                        val newId = insertWebRecipe(db, context, parsed, r.url)
+                                        if (newId > 0) {
+                                            onOpen(newId)
+                                        } else {
+                                            message = "Save failed, try again."
+                                            importingUrl = null
+                                        }
+                                    } else {
+                                        message = "That page hides its recipe. Opening the import screen for it."
+                                        onOpenWeb(r.url)
+                                    }
+                                }
+                            }
+                            .padding(12.dp)
+                    ) {
                         Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                        Text(hostOf(r.url) + "  \u00B7  " + r.engine, fontSize = 13.sp, maxLines = 1)
+                        Text(hostOf(r.url) + "  \u00B7  tap to add", fontSize = 13.sp, maxLines = 1)
                     }
                 }
             }
             if (webBlocked) {
                 item {
                     Text(
-                        "Web search would not answer an automated request right now, so these come from the built-in catalog. Opening in the browser always works.",
+                        "Web search would not answer an automated request right now, so these come from the built-in catalog.",
                         fontSize = 14.sp,
                         modifier = Modifier.padding(top = 6.dp),
                     )
@@ -416,7 +431,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
             }
             if (searched && !loading && dbHits.isEmpty() && webResults.isEmpty() && offlineHits.isEmpty()) {
                 item {
-                    Text("Nothing found for that. Try fewer words, or open it in the browser and paste the link back here.", fontSize = 15.sp)
+                    Text("Nothing found for that. Try fewer words, or paste a link to a recipe page.", fontSize = 15.sp)
                 }
             }
         }
