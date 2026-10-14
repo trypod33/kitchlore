@@ -131,7 +131,7 @@ private val FRAC_CHARS = mapOf(
 )
 
 /** One quantity token: "2", "0.5", "1/2", "1 1/2" pieces handled by the caller, "1\u00BD" mixed forms. */
-private fun quantityTokenValue(t: String): Double? {
+internal fun quantityTokenValue(t: String): Double? {
     if (t.isEmpty()) return null
     if (t.length == 1) return FRAC_CHARS[t[0]]
     var i = 0

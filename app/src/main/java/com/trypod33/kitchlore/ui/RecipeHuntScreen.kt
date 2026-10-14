@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -38,7 +39,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
+import com.trypod33.kitchlore.data.KeylessSearch
 import com.trypod33.kitchlore.data.OcrParser
+import com.trypod33.kitchlore.data.MealDbCacheEntry
+import com.trypod33.kitchlore.data.RecipeCache
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Ingredient
 import com.trypod33.kitchlore.data.local.entity.Recipe
@@ -93,6 +99,44 @@ object MealDb {
 
     fun search(query: String): List<Hit> =
         hitsFrom(get("$BASE/search.php?s=${URLEncoder.encode(query, "UTF-8")}"))
+
+    /** Words that match everything and nothing, stripped before falling back to smaller queries. */
+    private val STOP_WORDS = setOf(
+        "recipe", "recipes", "easy", "best", "simple", "quick", "healthy",
+        "homemade", "authentic", "delicious", "tasty", "with", "and", "the",
+        "a", "for", "of", "how", "to", "make",
+    )
+
+    data class SmartResult(val exact: Boolean, val hits: List<Hit>)
+
+    /**
+     * The catalog is small and exact-phrase search misses real dishes, so the
+     * query walks down: whole phrase, stop-word-stripped phrase, then token
+     * pairs ("braised pork", "pork chops"), then single words. Anything past
+     * the whole phrase is a related match and the UI says so.
+     */
+    fun searchSmart(query: String): SmartResult {
+        val q = query.trim()
+        if (q.isEmpty()) return SmartResult(true, emptyList())
+        val exact = search(q)
+        if (exact.isNotEmpty()) return SmartResult(true, exact)
+        val tokens = q.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() && it !in STOP_WORDS }
+        val cleaned = tokens.joinToString(" ")
+        if (cleaned.isNotEmpty() && !cleaned.equals(q.lowercase(), true)) {
+            val cleanedHits = search(cleaned)
+            if (cleanedHits.isNotEmpty()) return SmartResult(false, cleanedHits)
+        }
+        val seen = LinkedHashMap<String, Hit>()
+        for (i in 0 until tokens.size - 1) {
+            search(tokens[i] + " " + tokens[i + 1]).forEach { seen.putIfAbsent(it.id, it) }
+            if (seen.size >= 8) return SmartResult(false, seen.values.toList())
+        }
+        for (t in tokens) {
+            search(t).forEach { seen.putIfAbsent(it.id, it) }
+            if (seen.size >= 8) break
+        }
+        return SmartResult(false, seen.values.toList())
+    }
 
     fun byIngredient(ingredient: String): List<Hit> =
         hitsFrom(get("$BASE/filter.php?i=${URLEncoder.encode(ingredient, "UTF-8")}"))
@@ -216,14 +260,29 @@ fun WebThumb(url: String?, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit) {
+fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit, onOpenWeb: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var importingId by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
-    var hits by remember { mutableStateOf<List<MealDb.Hit>>(emptyList()) }
+    var dbHits by remember { mutableStateOf<List<MealDb.Hit>>(emptyList()) }
+    var exactMatch by remember { mutableStateOf(true) }
+    var webResults by remember { mutableStateOf<List<KeylessSearch.Result>>(emptyList()) }
+    var webBlocked by remember { mutableStateOf(false) }
+    var offlineHits by remember { mutableStateOf<List<MealDbCacheEntry>>(emptyList()) }
+    var searched by remember { mutableStateOf(false) }
+
+    fun openInBrowser(q: String) {
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + URLEncoder.encode(q, "UTF-8")))
+            )
+        } catch (t: Throwable) {
+            message = "No browser app found."
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -233,30 +292,53 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit)
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            label = { Text("Chicken with rice, fried rice, eggs benedict...") },
+            label = { Text("Chicken with rice, braised pork chops...") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
-        Button(
-            onClick = {
-                val q = query.trim()
-                if (q.isEmpty()) return@Button
-                loading = true
-                message = null
-                hits = emptyList()
-                scope.launch {
-                    val result = withContext(Dispatchers.IO) { MealDb.search(q) }
-                    hits = result
-                    if (result.isEmpty()) message = "Nothing found for \"$q\". Try fewer words."
-                    loading = false
-                }
-            },
-            enabled = !loading,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (loading) "Searching..." else "Search the internet") }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    val q = query.trim()
+                    if (q.isEmpty()) return@Button
+                    loading = true
+                    message = null
+                    searched = false
+                    dbHits = emptyList()
+                    webResults = emptyList()
+                    offlineHits = emptyList()
+                    webBlocked = false
+                    scope.launch {
+                        val smart = withContext(Dispatchers.IO) { MealDb.searchSmart(q) }
+                        dbHits = smart.hits
+                        exactMatch = smart.exact
+                        if (!smart.exact && smart.hits.isEmpty()) {
+                            // Keyless web search, best effort, honest when blocked
+                            val web = withContext(Dispatchers.IO) { KeylessSearch.search(q) }
+                            webResults = web
+                            if (web.isEmpty()) {
+                                webBlocked = true
+                                offlineHits = RecipeCache.searchOffline(context, q)
+                            }
+                        }
+                        searched = true
+                        loading = false
+                    }
+                },
+                enabled = !loading,
+                modifier = Modifier.weight(1f),
+            ) { Text(if (loading) "Searching..." else "Search") }
+            OutlinedButton(onClick = { openInBrowser(query.trim()) }, enabled = !loading) { Text("Open in browser") }
+            OutlinedButton(onClick = { onOpenWeb("") }) { Text("Paste link") }
+        }
         message?.let { Text(it, fontSize = 15.sp) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(hits, key = { it.id }) { hit ->
+            if (searched && !exactMatch && dbHits.isNotEmpty()) {
+                item {
+                    Text("No exact match, showing related", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            items(dbHits, key = { "db-" + it.id }) { hit ->
                 Card(Modifier.fillMaxWidth()) {
                     Row(
                         Modifier.height(88.dp).clickable(enabled = importingId == null) {
@@ -283,6 +365,66 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit)
                     }
                 }
             }
+            if (webResults.isNotEmpty()) {
+                item {
+                    Text("From the web", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+            items(webResults, key = { "web-" + it.url }) { r ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().clickable { onOpenWeb(r.url) }.padding(12.dp)) {
+                        Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                        Text(hostOf(r.url) + "  \u00B7  " + r.engine, fontSize = 13.sp, maxLines = 1)
+                    }
+                }
+            }
+            if (webBlocked) {
+                item {
+                    Text(
+                        "Web search would not answer an automated request right now, so these come from the built-in catalog. Opening in the browser always works.",
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Text("Offline picks", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+            items(offlineHits, key = { "off-" + it.id }) { e ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.height(72.dp).clickable(enabled = importingId == null) {
+                            importingId = e.id
+                            message = "Importing ${e.name}..."
+                            scope.launch {
+                                val newId = MealDb.import(db, context, e.id)
+                                if (newId > 0) {
+                                    onOpen(newId)
+                                } else {
+                                    message = "Needs a connection to import. Open in browser instead?"
+                                    importingId = null
+                                }
+                            }
+                        },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        WebThumb(e.thumb, Modifier.width(72.dp).fillMaxHeight())
+                        Column(Modifier.padding(12.dp)) {
+                            Text(e.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            Text(e.category, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+            if (searched && !loading && dbHits.isEmpty() && webResults.isEmpty() && offlineHits.isEmpty()) {
+                item {
+                    Text("Nothing found for that. Try fewer words, or open it in the browser and paste the link back here.", fontSize = 15.sp)
+                }
+            }
         }
     }
+}
+
+private fun hostOf(url: String): String = try {
+    java.net.URI(url).host?.removePrefix("www.") ?: url
+} catch (t: Throwable) {
+    url
 }

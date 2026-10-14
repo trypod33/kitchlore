@@ -15,30 +15,35 @@ import androidx.compose.ui.Modifier
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.ui.CookModeRoute
 import com.trypod33.kitchlore.ui.KitchloreTheme
+import com.trypod33.kitchlore.ui.WebImportRoute
 import com.trypod33.kitchlore.ui.PantryRoute
 import com.trypod33.kitchlore.ui.RecipeHuntRoute
 import com.trypod33.kitchlore.ui.DocImportRoute
 import com.trypod33.kitchlore.ui.EditRecipeScreen
 import com.trypod33.kitchlore.ui.RecipeDetailRoute
 import com.trypod33.kitchlore.ui.RecipeListScreen
+import android.content.Intent
 import com.trypod33.kitchlore.ui.ScanRoute
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app = application as KitchloreApp
+        // Share-to-Kitchlore: a shared link opens straight into the import screen
+        val sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT)?.trim()
+        val initialScreen = if (sharedText != null && sharedText.startsWith("http")) "import:" + sharedText else "list"
         setContent {
             KitchloreTheme {
-                KitchloreNav(app.database)
+                KitchloreNav(app.database, initialScreen)
             }
         }
     }
 }
 
 @Composable
-fun KitchloreNav(db: AppDatabase) {
+fun KitchloreNav(db: AppDatabase, initialScreen: String = "list") {
     Surface(Modifier.fillMaxSize()) {
-            var screen by remember { mutableStateOf("list") }
+            var screen by remember { mutableStateOf(initialScreen) }
             when {
                 screen.startsWith("cook:") -> {
                     val idStr = screen.substringAfter("cook:")
@@ -66,6 +71,13 @@ fun KitchloreNav(db: AppDatabase) {
                 }
                 screen == "hunt" -> RecipeHuntRoute(
                     db = db,
+                    onBack = { screen = "list" },
+                    onOpen = { screen = "detail:$it" },
+                    onOpenWeb = { screen = "import:$it" },
+                )
+                screen.startsWith("import:") -> WebImportRoute(
+                    db = db,
+                    initialUrl = screen.substringAfter("import:"),
                     onBack = { screen = "list" },
                     onOpen = { screen = "detail:$it" },
                 )
