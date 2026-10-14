@@ -155,6 +155,14 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                         label = { Text("Step ${i + 1}") },
                         modifier = Modifier.weight(1f),
                     )
+                    TextButton(
+                        onClick = { if (i > 0) stepDrafts = stepDrafts.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } },
+                        enabled = i > 0,
+                    ) { Text("\u2191") }
+                    TextButton(
+                        onClick = { if (i < stepDrafts.size - 1) stepDrafts = stepDrafts.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } },
+                        enabled = i < stepDrafts.size - 1,
+                    ) { Text("\u2193") }
                     TextButton(onClick = { stepDrafts = stepDrafts.filterIndexed { j, _ -> j != i } }) { Text("X") }
                 }
             }

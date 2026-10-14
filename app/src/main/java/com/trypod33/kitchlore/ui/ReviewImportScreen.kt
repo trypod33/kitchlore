@@ -91,6 +91,8 @@ fun ReviewImportScreen(
                     singleLine = true,
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                 )
+                IconButton(onClick = { if (i > 0) ingredients = ingredients.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }, enabled = i > 0) { Text("\u2191") }
+                IconButton(onClick = { if (i < ingredients.size - 1) ingredients = ingredients.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }, enabled = i < ingredients.size - 1) { Text("\u2193") }
                 IconButton(onClick = { ingredients = ingredients.toMutableList().also { it.removeAt(i) } }) {
                     Text("x")
                 }
@@ -110,6 +112,8 @@ fun ReviewImportScreen(
                     },
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                 )
+                IconButton(onClick = { if (i > 0) steps = steps.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }, enabled = i > 0) { Text("\u2191") }
+                IconButton(onClick = { if (i < steps.size - 1) steps = steps.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }, enabled = i < steps.size - 1) { Text("\u2193") }
                 IconButton(onClick = { steps = steps.toMutableList().also { it.removeAt(i) } }) {
                     Text("x")
                 }
