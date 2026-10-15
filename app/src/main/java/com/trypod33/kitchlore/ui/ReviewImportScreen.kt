@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,6 +55,13 @@ fun ReviewImportScreen(
     var ingredients by remember {
         mutableStateOf(parsed.ingredients.map { displayLine(it) }.ifEmpty { listOf("") })
     }
+    // Lines the scanner read with a unit but no number ("tablespoons creamy
+    // peanut butter") get a quiet "amount missing" hint until they are fixed.
+    var ingHints by remember {
+        mutableStateOf(
+            parsed.ingredients.mapIndexedNotNull { i, p -> if (p.needsAmount) i else null }.toSet()
+        )
+    }
     var steps by remember {
         mutableStateOf(parsed.steps.map { it.instructionText }.ifEmpty { listOf("") })
     }
@@ -83,25 +91,35 @@ fun ReviewImportScreen(
 
         Text("Ingredients", fontSize = 18.sp, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
         ingredients.forEachIndexed { i, line ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = ingredients[i],
-                    onValueChange = { v ->
-                        ingredients = ingredients.toMutableList().also { it[i] = v }
-                    },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f).padding(vertical = 4.dp),
-                )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("\u2191", fontSize = 16.sp, modifier = Modifier
-                        .clickable(enabled = i > 0) { if (i > 0) ingredients = ingredients.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }
-                        .padding(2.dp))
-                    Text("x", fontSize = 14.sp, modifier = Modifier
-                        .clickable { ingredients = ingredients.toMutableList().also { it.removeAt(i) } }
-                        .padding(2.dp))
-                    Text("\u2193", fontSize = 16.sp, modifier = Modifier
-                        .clickable(enabled = i < ingredients.size - 1) { if (i < ingredients.size - 1) ingredients = ingredients.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }
-                        .padding(2.dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = ingredients[i],
+                        onValueChange = { v ->
+                            ingredients = ingredients.toMutableList().also { it[i] = v }
+                        },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("\u2191", fontSize = 16.sp, modifier = Modifier
+                            .clickable(enabled = i > 0) { if (i > 0) ingredients = ingredients.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }
+                            .padding(2.dp))
+                        Text("x", fontSize = 14.sp, modifier = Modifier
+                            .clickable { ingredients = ingredients.toMutableList().also { it.removeAt(i) } }
+                            .padding(2.dp))
+                        Text("\u2193", fontSize = 16.sp, modifier = Modifier
+                            .clickable(enabled = i < ingredients.size - 1) { if (i < ingredients.size - 1) ingredients = ingredients.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }
+                            .padding(2.dp))
+                    }
+                }
+                if (i in ingHints) {
+                    Text(
+                        "amount missing from the scan, add it above",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
                 }
             }
         }

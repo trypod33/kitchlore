@@ -58,7 +58,7 @@ fun LegalRoute(onBack: () -> Unit) {
             LegalPara("Kitchlore uses a small AI language model that runs entirely on your device to help read photos of handwritten recipes and tidy measurements. It can misread words and amounts, so every scan and import is shown for your review before it saves, and you can edit anything. Nothing is sent to a server for processing.")
             SectionLabel("Open source and content credits")
             LegalPara("Kitchlore is built with open-source software including Kotlin, Jetpack Compose, Room, Hilt and LiteRT, all under the Apache License 2.0 or compatible licenses.")
-            LegalPara("The built-in starter catalog comes from TheMealDB (themealdb.com). Thanks to the community behind it.")
+            LegalPara("Recipes imported from the web keep the site they came from in their source note; the recipes belong to their publishers.")
         }
     }
 }

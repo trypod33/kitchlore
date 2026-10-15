@@ -8,6 +8,8 @@ data class ParsedIngredient(
     val rawText: String,
     val amount: Double? = null,
     val unit: String? = null,
+    /** A unit came through with no number ("tablespoons creamy peanut butter"): the scanner lost the amount. Shown to the reviewer. */
+    val needsAmount: Boolean = false,
 )
 
 data class ParsedStep(
@@ -56,6 +58,8 @@ object OcrParser {
         "serve", "top", "drizzle", "season", "chop", "dice", "mince",
         "slice", "grease", "line", "knead", "marinate", "refrigerate",
         "seal", "soften", "whip",
+        "pulse", "process", "whirl", "liquefy", "puree", "microwave",
+        "steep", "strain", "toast", "zest", "juice",
         "transfer", "combine", "layer", "sprinkle", "melt", "brown",
         "garnish", "rest", "carve", "brush", "coat", "press", "shape",
         "roll", "cut", "let",
@@ -169,7 +173,13 @@ object OcrParser {
         // without them, plain text order stands.
         val ordered = if (boxes.isNotEmpty()) columnOrdered(boxes) else null
         val srcLines: List<String> = ordered ?: text.lines()
-        val lines = srcLines.map { it.trim() }.filter { it.isNotEmpty() }
+        // Character-level cleanup first (recognizer garbles like "SMOCTHIE"
+        // for SMOOTHIE), then amounts the card's tight wrapping orphaned onto
+        // their own line are rejoined to the unit line below them.
+        val lines = srcLines.map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { OcrLexicon.fixLine(it) }
+            .let { rejoinOrphanAmounts(it) }
         if (lines.isEmpty()) return ParsedRecipe("(untitled)")
 
         val servings =
@@ -181,7 +191,7 @@ object OcrParser {
 
         var title: String? = null
         if (blocks.isNotEmpty()) {
-            val cand = blocks.maxByOrNull { it.second }?.first?.trim()
+            val cand = blocks.maxByOrNull { it.second }?.first?.let { OcrLexicon.fixLine(it.trim()) }
             if (!cand.isNullOrBlank() && cand.length <= 90 && !cand.contains("serves", ignoreCase = true) &&
                 !isNoise(cand) && !LEADING_QTY_RE.containsMatchIn(cand) &&
                     !LEADING_QTY_ALT_RE.containsMatchIn(cand) && !cand.trimEnd().endsWith(":")
@@ -308,6 +318,7 @@ object OcrParser {
         var idx = 0
         var amount: Double? = null
         var unit: String? = null
+        var missingAmount = false
         if (tokens.isNotEmpty()) {
             val a = parseAmount(tokens[0])
             if (a != null) {
@@ -335,10 +346,12 @@ object OcrParser {
                 idx++
             }
         } else if (amount == null && idx < tokens.size) {
-            // "cup chopped green onion": the scan lost the amount, keep the unit.
+            // "cup chopped green onion": the scan lost the amount, keep the
+            // unit and flag the line so the reviewer knows the number is gone.
             unitCand(idx)?.let {
                 unit = it
                 idx++
+                missingAmount = idx < tokens.size
             }
         }
         val name = tokens.drop(idx).joinToString(" ").trim()
@@ -347,6 +360,7 @@ object OcrParser {
             rawText = raw,
             amount = amount,
             unit = unit,
+            needsAmount = missingAmount,
         )
     }
 
@@ -584,5 +598,33 @@ object OcrParser {
                 .forEach { appendToSteps(out, it) }
         }
         return out
+    }
+
+    // A tightly wrapped card can strand an ingredient's amount on its own line
+    // right above the unit ("2" / "tablespoons creamy peanut butter"). A bare
+    // number line directly above a line that opens with a unit word is that
+    // ingredient's amount, rejoined so the quantity is not lost.
+    private fun rejoinOrphanAmounts(lines: List<String>): List<String> {
+        val out = mutableListOf<String>()
+        for (l in lines) {
+            val prev = out.lastOrNull()
+            if (prev != null && isBareAmountLine(prev) && startsWithUnitWord(l)) {
+                out[out.size - 1] = "$prev $l"
+            } else {
+                out.add(l)
+            }
+        }
+        return out
+    }
+
+    private fun isBareAmountLine(line: String): Boolean {
+        val t = line.trim()
+        if (t.split(Regex("\\s+")).size != 1) return false
+        return parseAmount(t) != null || AmountFixer.isGarbleAmount(t)
+    }
+
+    private fun startsWithUnitWord(line: String): Boolean {
+        val first = line.trim().split(Regex("\\s+")).firstOrNull()?.trimEnd('.', ',')?.lowercase() ?: return false
+        return first in UNITS
     }
 }

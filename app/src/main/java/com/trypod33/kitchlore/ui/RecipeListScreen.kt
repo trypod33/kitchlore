@@ -401,6 +401,30 @@ fun RecipeListScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
+            } else if (trimmed.isNotEmpty()) {
+                // Search mode: matches lead at the top, and the decorative
+                // rails, chips and category grid stand down until the query
+                // clears.
+                item {
+                    SectionLabel(
+                        if (filtered.isEmpty()) "No matches"
+                        else if (filtered.size == 1) "1 match"
+                        else "${filtered.size} matches"
+                    )
+                }
+                if (filtered.isEmpty()) {
+                    item {
+                        Text(
+                            "Nothing in the library matches that. Recipe hunt can find one online.",
+                            modifier = Modifier.padding(20.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                } else {
+                    items(filtered, key = { it.id }) { recipe ->
+                        RecipeResultRow(recipe = recipe, onOpen = onOpen)
+                    }
+                }
             } else {
                 item { SectionLabel("Cook with what you have") }
                 item {
@@ -507,56 +531,7 @@ fun RecipeListScreen(
                     }
                 } else {
                     items(filtered, key = { it.id }) { recipe ->
-                        val interaction = remember { MutableInteractionSource() }
-                        val pressed by interaction.collectIsPressedAsState()
-                        val scale by animateFloatAsState(
-                            targetValue = if (pressed) 0.97f else 1f,
-                            label = "cardScale",
-                        )
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 6.dp)
-                                .graphicsLayer {
-                                    scaleX = scale
-                                    scaleY = scale
-                                }
-                                .clickable(interactionSource = interaction, indication = null) { onOpen(recipe.id) },
-                            shape = RoundedCornerShape(18.dp),
-                        ) {
-                            Row(Modifier.height(92.dp), verticalAlignment = Alignment.CenterVertically) {
-                                RecipeThumbnail(
-                                    recipe.originalImagePath,
-                                    Modifier
-                                        .fillMaxHeight()
-                                        .width(92.dp)
-                                        .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp)),
-                                )
-                                Column(Modifier.padding(12.dp)) {
-                                    Text(
-                                        recipe.title,
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    val line = servingLine(recipe)
-                                    if (line.isNotEmpty()) {
-                                        Text(line, fontSize = 13.sp, maxLines = 1)
-                                    }
-                                    val tags = recipe.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                                    if (tags.isNotEmpty()) {
-                                        Text(
-                                            tags.take(3).joinToString("  \u00B7  "),
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        RecipeResultRow(recipe = recipe, onOpen = onOpen)
                     }
                 }
             }
@@ -585,5 +560,60 @@ fun RecipeListScreen(
             },
             dismissButton = { TextButton(onClick = { showAddIng = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** One library recipe row, shared by the search results and the All recipes list. */
+@Composable
+private fun RecipeResultRow(recipe: com.trypod33.kitchlore.data.local.entity.Recipe, onOpen: (Long) -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        label = "cardScale",
+    )
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 6.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clickable(interactionSource = interaction, indication = null) { onOpen(recipe.id) },
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Row(Modifier.height(92.dp), verticalAlignment = Alignment.CenterVertically) {
+            RecipeThumbnail(
+                recipe.originalImagePath,
+                Modifier
+                    .fillMaxHeight()
+                    .width(92.dp)
+                    .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp)),
+            )
+            Column(Modifier.padding(12.dp)) {
+                Text(
+                    recipe.title,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val line = servingLine(recipe)
+                if (line.isNotEmpty()) {
+                    Text(line, fontSize = 13.sp, maxLines = 1)
+                }
+                val tags = recipe.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                if (tags.isNotEmpty()) {
+                    Text(
+                        tags.take(3).joinToString("  \u00B7  "),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }

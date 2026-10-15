@@ -120,6 +120,7 @@ fun KitchloreNav(
                     db = db,
                     onBack = { screen = "list" },
                     onOpen = { screen = "detail:$it" },
+                    onOpenWeb = { screen = "import:$it" },
                 )
                 screen == "scan" -> ScanRoute(
                     db = db,

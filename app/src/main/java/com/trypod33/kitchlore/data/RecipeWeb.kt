@@ -263,36 +263,6 @@ object KeylessSearch {
     }
 }
 
-/** The bundled offline catalog: names, ids and categories from TheMealDB shipped in the APK. */
-object RecipeCache {
-    fun load(context: Context): List<MealDbCacheEntry> = try {
-        val text = context.assets.open("mealdb_cache.json").bufferedReader().use { it.readText() }
-        val arr = JSONArray(text)
-        (0 until arr.length()).map { i ->
-            val o = arr.getJSONObject(i)
-            MealDbCacheEntry(o.optString("id"), o.optString("name"), o.optString("category"), o.optString("thumb"))
-        }
-    } catch (t: Throwable) {
-        emptyList()
-    }
-
-    fun searchOffline(context: Context, query: String): List<MealDbCacheEntry> {
-        val tokens = query.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (tokens.isEmpty()) return emptyList()
-        return load(context)
-            .map { e ->
-                val name = e.name.lowercase()
-                e to tokens.count { Regex("\\b" + Regex.escape(it) + "\\b").containsMatchIn(name) }
-            }
-            .filter { it.second > 0 }
-            .sortedByDescending { it.second }
-            .take(12)
-            .map { it.first }
-    }
-}
-
-data class MealDbCacheEntry(val id: String, val name: String, val category: String, val thumb: String)
-
 /** Files a parsed web recipe into the library, photo downloaded when we have one. Returns the new id or -1. */
 suspend fun insertWebRecipe(db: AppDatabase, context: Context, parsed: ParsedWebRecipe, sourceUrl: String): Long =
     withContext(Dispatchers.IO) {

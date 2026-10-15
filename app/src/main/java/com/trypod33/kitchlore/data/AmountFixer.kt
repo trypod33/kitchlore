@@ -13,7 +13,7 @@ object AmountFixer {
 
     // "%" and "%%" garbles, with or without a whole-number part ("1%", "1%%").
     private val PERCENT_GARBLE_RE = Regex("^\\d*%+\\d*$")
-    private val VEE_RE = Regex("^v[s2348]$", RegexOption.IGNORE_CASE)
+    private val VEE_RE = Regex("^v[s2348a]$", RegexOption.IGNORE_CASE)
     private val H_UNIT_RE = Regex(
         "^h(cups?|tbsps?|tsps?|tablespoons?|teaspoons?)$",
         RegexOption.IGNORE_CASE,
@@ -47,7 +47,7 @@ object AmountFixer {
                 VEE_RE.matches(key) -> when (key.drop(1)) {
                     "3", "s" -> "1/3$punct"
                     "2" -> "1/2$punct"
-                    "4" -> "1/4$punct"
+                    "4", "a" -> "1/4$punct"
                     "8" -> "1/8$punct"
                     else -> tok
                 }
