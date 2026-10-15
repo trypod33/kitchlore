@@ -49,6 +49,7 @@ import com.trypod33.kitchlore.data.KeylessSearch
 import com.trypod33.kitchlore.data.fetchPage
 import com.trypod33.kitchlore.data.insertWebRecipe
 import com.trypod33.kitchlore.data.local.AppDatabase
+import com.trypod33.kitchlore.data.local.entity.Recipe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,6 +83,14 @@ object WebHunt {
         if (cleaned.isNotEmpty() && !cleaned.equals(q, ignoreCase = true)) {
             val cleanedHits = KeylessSearch.search(cleaned)
             if (cleanedHits.isNotEmpty()) return SmartResult(false, cleanedHits)
+        }
+        // A bare ingredient like "chicken" reads as noise to a search engine; as
+        // "chicken recipes" it lands on real recipe pages. Try it before the
+        // smaller token falls back.
+        val recipeQuery = cleaned.ifEmpty { q.lowercase() }
+        if (!recipeQuery.endsWith("recipe") && !recipeQuery.endsWith("recipes")) {
+            val withRecipes = KeylessSearch.search("$recipeQuery recipes")
+            if (withRecipes.isNotEmpty()) return SmartResult(false, withRecipes)
         }
         val seen = LinkedHashMap<String, KeylessSearch.Result>()
         for (i in 0 until tokens.size - 1) {
@@ -166,6 +175,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var importingUrl by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var hits by remember { mutableStateOf<List<KeylessSearch.Result>>(emptyList()) }
+    var localHits by remember { mutableStateOf<List<Recipe>>(emptyList()) }
     var exactMatch by remember { mutableStateOf(true) }
     var searched by remember { mutableStateOf(false) }
     var webLabel by remember { mutableStateOf("More from the web") }
@@ -193,6 +203,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                     message = null
                     searched = false
                     hits = emptyList()
+                    localHits = emptyList()
                     val applianceHit = applianceIn(q)
                     val webQuery = applianceHit?.let { a ->
                         val named = if (a == "instapot") "instant pot" else a
@@ -204,6 +215,17 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                         val smart = withContext(Dispatchers.IO) { WebHunt.searchSmart(webQuery) }
                         hits = smart.hits
                         exactMatch = smart.exact
+                        // The web engines can refuse an automated caller outright.
+                        // When they all do, the closest saved recipes step in so
+                        // the hunt never dead-ends on an empty screen.
+                        localHits = if (smart.hits.isEmpty()) withContext(Dispatchers.IO) {
+                            val words = webQuery.lowercase().split(Regex("\\s+"))
+                                .filter { it.isNotBlank() && it.length > 2 }
+                            db.recipeDao().getAllRecipesOnce().filter { r ->
+                                val hay = (r.title + " " + r.tagsCsv + " " + (r.sourceNote ?: "")).lowercase()
+                                words.any { hay.contains(it) }
+                            }.take(6)
+                        } else emptyList()
                         searched = true
                         loading = false
                     }
@@ -281,7 +303,44 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                     }
                 }
             }
-            if (searched && !loading && hits.isEmpty()) {
+            if (searched && !loading && localHits.isNotEmpty()) {
+                item { SectionLabel("From your library") }
+            }
+            items(localHits, key = { "local-" + it.id }) { r ->
+                ResultCard {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable(enabled = importingUrl == null) { onOpen(r.id) }
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    r.title.trim().take(1).uppercase(),
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
+                        }
+                        Column(Modifier.padding(start = 12.dp)) {
+                            Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                            Text(
+                                "saved recipe  \u00B7  tap to open",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+            if (searched && !loading && hits.isEmpty() && localHits.isEmpty()) {
                 item {
                     Text(
                         "Nothing came back for that.\nTry fewer words, or paste a link to a recipe page.",

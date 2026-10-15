@@ -15,6 +15,7 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
+import java.net.URLDecoder
 
 const val BROWSER_UA =
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -206,11 +207,21 @@ object HtmlRecipeParser {
 object KeylessSearch {
     data class Result(val title: String, val url: String, val engine: String)
 
-    private val SEARX_INSTANCES = listOf("https://searx.be", "https://priv.au", "https://paulgo.io")
+    // A wide list on purpose: these instances rate-limit or refuse an automated
+    // caller at any hour, so the chain walks as many as it needs and accepts
+    // either the JSON feed or the HTML page they fall back to serving.
+    private val SEARX_INSTANCES = listOf(
+        "https://searx.be", "https://priv.au", "https://paulgo.io",
+        "https://search.inetol.net", "https://baresearch.org", "https://searxng.site",
+        "https://search.mdosch.de", "https://opnxng.com", "https://search.bus-hit.me",
+    )
 
     fun search(query: String): List<Result> {
         val fromSearx = searx(query)
-        return if (fromSearx.isNotEmpty()) fromSearx else ddgLite(query)
+        if (fromSearx.isNotEmpty()) return fromSearx
+        val fromLite = ddgLite(query)
+        if (fromLite.isNotEmpty()) return fromLite
+        return ddgHtml(query)
     }
 
     private fun searx(query: String): List<Result> {
@@ -219,22 +230,88 @@ object KeylessSearch {
                 val body = fetchBody(
                     "$base/search?format=json&q=" + URLEncoder.encode(query, "UTF-8")
                 ) ?: continue
-                val json = JSONObject(body)
-                val arr = json.optJSONArray("results") ?: continue
-                val out = mutableListOf<Result>()
-                for (i in 0 until arr.length()) {
-                    val r = arr.getJSONObject(i)
-                    val u = r.optString("url")
-                    val t = r.optString("title")
-                    if (u.startsWith("http") && t.isNotBlank()) out.add(Result(stripTags(t), u, "SearXNG"))
-                    if (out.size >= 10) break
-                }
-                if (out.isNotEmpty()) return out
+                val fromJson = parseSearxJson(body)
+                if (fromJson.isNotEmpty()) return fromJson
+                // Some instances ignore the format param and answer with the HTML
+                // page, which still carries the results. Parse it rather than skip.
+                val fromHtml = parseSearxHtml(body)
+                if (fromHtml.isNotEmpty()) return fromHtml
             } catch (t: Throwable) {
                 // try the next instance
             }
         }
         return emptyList()
+    }
+
+    private fun parseSearxJson(body: String): List<Result> {
+        return try {
+            val json = JSONObject(body)
+            val arr = json.optJSONArray("results") ?: return emptyList()
+            val out = mutableListOf<Result>()
+            for (i in 0 until arr.length()) {
+                val r = arr.getJSONObject(i)
+                val u = r.optString("url")
+                val t = r.optString("title")
+                if (u.startsWith("http") && t.isNotBlank()) out.add(Result(stripTags(t), u, "SearXNG"))
+                if (out.size >= 10) break
+            }
+            out
+        } catch (t: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun parseSearxHtml(body: String): List<Result> {
+        // Real result anchors first: searx renders each hit as <h3><a href>.
+        val strict = Regex(
+            "<h3[^>]*>\\s*<a[^>]+href=\"(https?://[^\"]+)\"[^>]*>(.*?)</a>",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE),
+        )
+        val strictHits = collectHtmlResults(body, strict)
+        if (strictHits != null) return strictHits
+        val broad = Regex(
+            "<a[^>]+href=\"(https?://[^\"]+)\"[^>]*>(.*?)</a>",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE),
+        )
+        return collectHtmlResults(body, broad) ?: emptyList()
+    }
+
+    private fun collectHtmlResults(body: String, re: Regex): List<Result>? {
+        val out = mutableListOf<Result>()
+        for (m in re.findAll(body)) {
+            val url = m.groupValues[1]
+            val title = stripTags(m.groupValues[2])
+            if (title.length < 12) continue // nav labels, not results
+            if (url.contains("/search?") || url.startsWith("#")) continue
+            if (SEARX_INSTANCES.any { url.contains(it.removePrefix("https://")) }) continue
+            out.add(Result(title, url, "SearXNG"))
+            if (out.size >= 10) break
+        }
+        return if (out.isEmpty()) null else out
+    }
+
+    /** Last resort: DuckDuckGo's full HTML endpoint, same idea as Lite but a different door. */
+    private fun ddgHtml(query: String): List<Result> {
+        val body = fetchBody("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8")) ?: return emptyList()
+        val re = Regex(
+            "<a[^>]+class=\"[^\"]*result__a[^\"]*\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE),
+        )
+        val out = mutableListOf<Result>()
+        for (m in re.findAll(body)) {
+            var url = m.groupValues[1]
+            val title = stripTags(m.groupValues[2])
+            if (title.isBlank()) continue
+            // DDG wraps hits in its own redirector; pull the real target out.
+            if (url.contains("uddg=")) {
+                val target = Regex("uddg=([^&]+)").find(url)?.groupValues?.get(1)
+                if (target != null) url = try { URLDecoder.decode(target, "UTF-8") } catch (t: Throwable) { url }
+            }
+            if (!url.startsWith("http") || url.contains("duckduckgo.com")) continue
+            out.add(Result(title, url, "DuckDuckGo"))
+            if (out.size >= 10) break
+        }
+        return out
     }
 
     private fun ddgLite(query: String): List<Result> {
