@@ -6,7 +6,9 @@ Kitchlore is an offline-first recipe keeper for Android. It was built to keep yo
 
 ## What we collect
 
-Nothing. Kitchlore has no accounts, no sign-ins, no analytics, and no tracking of any kind. No data about you or your recipes ever leaves your device through the app.
+Nothing that identifies you. Kitchlore has no accounts, no sign-ins, no analytics, and no tracking of any kind. Your recipes, photos and library are never uploaded anywhere.
+
+Two things do travel over the network, and only when you ask the app to: the search words you type into recipe search, sent to public search endpoints, and the recipe pages you choose to import, fetched from the sites that host them.
 
 ## What stays on your device
 
@@ -22,4 +24,4 @@ Importing a recipe fetches the recipe page directly from the site it lives on. K
 
 ## Contact
 
-Questions about this policy: keith.downs.gorman@gmail.com
+Questions about this policy: kinalm.caretracker@gmail.com
