@@ -111,12 +111,64 @@ object OcrParser {
         RegexOption.IGNORE_CASE,
     )
 
+    // One recognized line with its pixel box on the page, so side-by-side
+    // layouts can be read back in true column order.
+    data class OcrLineBox(
+        val text: String,
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+    )
+
+    // Rebuilds reading order for a side-by-side layout: split the lines on
+    // the widest horizontal gap between line centers, keep each column's
+    // vertical order, left column first. Returns null unless the card is
+    // clearly two-column, and the caller then falls back to plain order.
+    private fun columnOrdered(boxes: List<OcrLineBox>): List<String>? {
+        val usable = boxes.filter { it.text.isNotBlank() && it.right > it.left && it.bottom > it.top }
+        if (usable.size < 6) return null
+        val centers = usable.map { (it.left + it.right) / 2.0 }.sorted()
+        var bestIdx = -1
+        var bestGap = 0.0
+        for (i in 0 until centers.size - 1) {
+            val gap = centers[i + 1] - centers[i]
+            if (gap > bestGap) {
+                bestGap = gap
+                bestIdx = i
+            }
+        }
+        val span = (usable.maxOf { it.right } - usable.minOf { it.left }).toDouble()
+        if (span <= 0 || bestGap < span * 0.25) return null
+        val split = (centers[bestIdx] + centers[bestIdx + 1]) / 2.0
+        val leftCol = usable.filter { (it.left + it.right) / 2.0 <= split }.sortedBy { it.top }
+        val rightCol = usable.filter { (it.left + it.right) / 2.0 > split }.sortedBy { it.top }
+        if (leftCol.size < 3 || rightCol.size < 3) return null
+        // True side-by-side: the columns have to share vertical range, not
+        // stack like two pages.
+        val overlap = minOf(leftCol.maxOf { it.bottom }, rightCol.maxOf { it.bottom }) -
+            maxOf(leftCol.minOf { it.top }, rightCol.minOf { it.top })
+        val shorter = minOf(
+            leftCol.maxOf { it.bottom } - leftCol.minOf { it.top },
+            rightCol.maxOf { it.bottom } - rightCol.minOf { it.top },
+        ).toDouble()
+        if (overlap <= 0 || overlap < shorter * 0.3) return null
+        return (leftCol + rightCol).map { it.text.trim() }.filter { it.isNotEmpty() }
+    }
+
     fun parse(
         text: String,
         blocks: List<Pair<String, Int>> = emptyList(),
         rules: Map<String, String> = emptyMap(),
+        boxes: List<OcrLineBox> = emptyList(),
     ): ParsedRecipe {
-        val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        // A two-column card read straight off the page interleaves the
+        // columns, which bleeds steps into the ingredient list and
+      // ingredients into the steps (Keith's cream-cheese mints card).
+        // With line boxes the reading order is rebuilt column by column;
+        // without them, plain text order stands.
+        val ordered = if (boxes.isNotEmpty()) columnOrdered(boxes) else null
+        val lines = (ordered ?: text).lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ParsedRecipe("(untitled)")
 
         val servings =
@@ -369,6 +421,13 @@ object OcrParser {
         if (JUNK_LINE_RE.containsMatchIn(line)) return true
         val clean = line.trim().trimEnd('.', ' ').trim()
         if (clean.endsWith(":") && clean.none { it.isDigit() } && clean.length <= 25) return true
+        // Card art: a short all-caps banner or stamp ("QUICK & DELICIOUS",
+        // "QUICK&") is never recipe content. A one-word all-caps line keeps
+        // passing so an ingredient written in caps survives.
+        if (clean.length in 3..20 && clean.none { it.isDigit() } &&
+            clean.none { it.isLowerCase() } && clean.any { it.isLetter() } &&
+            (clean.any { !it.isLetterOrDigit() && it != ' ' } || clean.split(Regex("\\s+")).size >= 2)
+        ) return true
         if (clean.length <= 30 && clean.lowercase() in JUNK_EXACT) return true
         return false
     }

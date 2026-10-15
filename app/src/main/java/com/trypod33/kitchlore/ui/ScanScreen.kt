@@ -294,7 +294,13 @@ private fun runOcr(
             val blocks = visionText.textBlocks.flatMap { block ->
                 block.lines.map { line -> line.text to (line.boundingBox?.height() ?: 0) }
             }
-            val parsedRecipe = OcrParser.parse(visionText.text, blocks, rules)
+            val boxes = visionText.textBlocks.flatMap { block ->
+                block.lines.mapNotNull { line ->
+                    val b = line.boundingBox ?: return@mapNotNull null
+                    OcrParser.OcrLineBox(line.text, b.left, b.top, b.right, b.bottom)
+                }
+            }
+            val parsedRecipe = OcrParser.parse(visionText.text, blocks, rules, boxes)
             val path = when (image) {
                 is File -> image.absolutePath
                 is Uri -> copyUriToPhotos(context, image)
