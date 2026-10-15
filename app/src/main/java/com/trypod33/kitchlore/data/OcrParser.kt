@@ -168,7 +168,8 @@ object OcrParser {
         // With line boxes the reading order is rebuilt column by column;
         // without them, plain text order stands.
         val ordered = if (boxes.isNotEmpty()) columnOrdered(boxes) else null
-        val lines = (ordered ?: text).lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val srcLines: List<String> = ordered ?: text.lines()
+        val lines = srcLines.map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return ParsedRecipe("(untitled)")
 
         val servings =
