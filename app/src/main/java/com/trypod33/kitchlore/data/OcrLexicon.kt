@@ -704,7 +704,7 @@ private val BASE_WORDS = setOf(
         val punct = tok.substring(bare.length)
         if (bare.length < MIN_LEN || bare.length > MAX_LEN || bare.any { it.isDigit() }) return tok
         if (bare.contains('-')) {
-            val fixed = bare.split("-").joinToString("-") { seg -> fixSegment(seg, tok) }
+            val fixed = bare.split("-").joinToString("-") { seg -> fixSegment(seg, tok) ?: seg }
             if (fixed != bare) return fixed + punct
             return tok
         }
