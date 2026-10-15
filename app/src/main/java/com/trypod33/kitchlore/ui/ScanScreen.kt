@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -84,6 +85,9 @@ fun ScanRoute(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var parsed by remember { mutableStateOf<Pair<ParsedRecipe, String?>?>(null) }
+    // Multi-photo recipes: each capture lands here, and the reviewer gets
+    // one merged recipe with the overlapping lines deduped.
+    var staged by remember { mutableStateOf<List<Pair<ParsedRecipe, String?>>>(emptyList()) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
     val providerFuture = remember { ProcessCameraProvider.getInstance(context) }
@@ -93,6 +97,11 @@ fun ScanRoute(
         rules = withContext(Dispatchers.IO) {
             db.correctionRuleDao().getAllOnce().associate { it.garbled to it.replacement }
         }
+    }
+
+    fun stage(recipe: ParsedRecipe, path: String?) {
+        staged = staged + (recipe to path)
+        aiStatus = null
     }
 
     fun enhance(recipe: ParsedRecipe, path: String?) {
@@ -109,12 +118,19 @@ fun ScanRoute(
         }
     }
 
+    fun reviewStaged() {
+        if (staged.isEmpty()) return
+        val merged = mergeRecipes(staged.map { it.first })
+        enhance(merged, staged.first().second)
+    }
+
+
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             busy = true
             runOcr(context, uri, rules) { p, path ->
                 busy = false
-                enhance(p, path)
+                stage(p, path)
             }
         }
     }
@@ -236,7 +252,7 @@ fun ScanRoute(
                                 override fun onImageSaved(results: ImageCapture.OutputFileResults) {
                                     runOcr(context, out, rules) { parsedRecipe, path ->
                                         busy = false
-                                        enhance(parsedRecipe, path)
+                                        stage(parsedRecipe, path)
                                     }
                                 }
 
@@ -252,6 +268,22 @@ fun ScanRoute(
             }
         }
 
+        if (staged.isNotEmpty() && parsed == null) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+                Text(
+                    if (staged.size == 1) "1 page ready" else "${staged.size} pages ready",
+                    fontSize = 15.sp,
+                )
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = { reviewStaged() }) { Text("Review recipe") }
+                    if (mode == "photo") {
+                        OutlinedButton(onClick = {
+                            pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }) { Text("Add another page") }
+                    }
+                }
+            }
+        }
         if (busy) {
             Column(
                 Modifier.fillMaxWidth().padding(20.dp),
@@ -447,3 +479,49 @@ private fun copyUriToPhotos(context: android.content.Context, uri: Uri): String?
     }
 }
 
+
+
+// Two photos of one recipe overlap, so the same line shows up on both. Merge
+// the pages into one recipe and drop the repeats, matching on the cleaned
+// text rather than the raw OCR so a re-read line still counts as the same.
+private fun normLine(s: String): String =
+    s.lowercase().replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
+
+private fun seenBefore(key: String, seen: List<String>): Boolean =
+    seen.any { it == key || (key.length > 12 && (it.contains(key) || key.contains(it))) }
+
+private fun mergeRecipes(pages: List<ParsedRecipe>): ParsedRecipe {
+    if (pages.size <= 1) return pages.firstOrNull() ?: ParsedRecipe("(untitled)")
+    val base = pages.first()
+    val title = pages.maxByOrNull { it.title.length }?.title?.takeIf { it.isNotBlank() } ?: base.title
+    val ingredients = mutableListOf<com.trypod33.kitchlore.data.ParsedIngredient>()
+    val ingKeys = mutableListOf<String>()
+    pages.forEach { page ->
+        page.ingredients.forEach { ing ->
+            val key = normLine(ing.name.ifBlank { ing.rawText })
+            if (key.isNotEmpty() && !seenBefore(key, ingKeys)) {
+                ingKeys.add(key)
+                ingredients.add(ing)
+            }
+        }
+    }
+    val steps = mutableListOf<com.trypod33.kitchlore.data.ParsedStep>()
+    val stepKeys = mutableListOf<String>()
+    pages.forEach { page ->
+        page.steps.forEach { st ->
+            val key = normLine(st.instructionText)
+            if (key.isNotEmpty() && !seenBefore(key, stepKeys)) {
+                stepKeys.add(key)
+                steps.add(st)
+            }
+        }
+    }
+    return ParsedRecipe(
+        title = title,
+        baseServings = base.baseServings,
+        prepTimeMinutes = base.prepTimeMinutes ?: pages.firstNotNullOfOrNull { it.prepTimeMinutes },
+        cookTimeMinutes = base.cookTimeMinutes ?: pages.firstNotNullOfOrNull { it.cookTimeMinutes },
+        ingredients = ingredients,
+        steps = steps,
+    )
+}

@@ -1,21 +1,26 @@
 package com.trypod33.kitchlore.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -26,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trypod33.kitchlore.data.OcrParser
@@ -37,7 +43,9 @@ import com.trypod33.kitchlore.data.local.entity.Step
 import kotlinx.coroutines.launch
 
 // Review screen after a scan or document import: everything editable before
-// it goes into the library, same role as the Termux review step.
+// it goes into the library. Select mode makes cleanup fast: tap the junk
+// lines, one tap deletes them, two taps merge what the scan split apart, so
+// a bad scan is fixed in seconds.
 
 @Composable
 fun ReviewImportScreen(
@@ -65,6 +73,51 @@ fun ReviewImportScreen(
     var steps by remember {
         mutableStateOf(parsed.steps.map { it.instructionText }.ifEmpty { listOf("") })
     }
+    var selecting by remember { mutableStateOf(false) }
+    var selectedIng by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var selectedSteps by remember { mutableStateOf<Set<Int>>(emptySet()) }
+
+    fun toggleIng(i: Int) {
+        selectedIng = if (i in selectedIng) selectedIng - i else selectedIng + i
+    }
+    fun toggleStep(i: Int) {
+        selectedSteps = if (i in selectedSteps) selectedSteps - i else selectedSteps + i
+    }
+    fun deleteSelected() {
+        ingredients = ingredients.filterIndexed { i, _ -> i !in selectedIng }
+        steps = steps.filterIndexed { i, _ -> i !in selectedSteps }
+        selectedIng = emptySet()
+        selectedSteps = emptySet()
+    }
+    fun mergeSelected() {
+        if (selectedIng.size >= 2) {
+            val idxs = selectedIng.sorted()
+            val merged = idxs.mapNotNull { ingredients.getOrNull(it)?.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+            val out = mutableListOf<String>()
+            ingredients.forEachIndexed { i, v ->
+                when {
+                    i == idxs.first() -> out.add(merged)
+                    i in idxs -> {}
+                    else -> out.add(v)
+                }
+            }
+            ingredients = out
+            selectedIng = emptySet()
+        } else if (selectedSteps.size >= 2) {
+            val idxs = selectedSteps.sorted()
+            val merged = idxs.mapNotNull { steps.getOrNull(it)?.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+            val out = mutableListOf<String>()
+            steps.forEachIndexed { i, v ->
+                when {
+                    i == idxs.first() -> out.add(merged)
+                    i in idxs -> {}
+                    else -> out.add(v)
+                }
+            }
+            steps = out
+            selectedSteps = emptySet()
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
         Text("Review recipe", fontSize = 26.sp)
@@ -89,18 +142,70 @@ fun ReviewImportScreen(
             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         )
 
-        Text("Ingredients", fontSize = 18.sp, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Ingredients", fontSize = 18.sp)
+            TextButton(onClick = {
+                selecting = !selecting
+                selectedIng = emptySet()
+                selectedSteps = emptySet()
+            }) { Text(if (selecting) "Cancel select" else "Select lines") }
+        }
+        if (selecting) {
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilledTonalButton(
+                    onClick = { deleteSelected() },
+                    enabled = selectedIng.isNotEmpty() || selectedSteps.isNotEmpty(),
+                ) { Text("Delete ${selectedIng.size + selectedSteps.size}") }
+                FilledTonalButton(
+                    onClick = { mergeSelected() },
+                    enabled = selectedIng.size >= 2 || selectedSteps.size >= 2,
+                ) { Text("Merge") }
+            }
+        }
         ingredients.forEachIndexed { i, line ->
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = ingredients[i],
-                        onValueChange = { v ->
-                            ingredients = ingredients.toMutableList().also { it[i] = v }
-                        },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (selecting) Modifier.clickable { toggleIng(i) } else Modifier
                     )
+                    .background(
+                        if (selecting && i in selectedIng) MaterialTheme.colorScheme.secondaryContainer
+                        else Color.Transparent
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (selecting) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (i in selectedIng) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp).size(22.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (i in selectedIng) {
+                                Text("\u2713", fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimary)
+                            }
+                        }
+                    }
+                    SpacerWidth(6.dp)
+                }
+                OutlinedTextField(
+                    value = ingredients[i],
+                    onValueChange = { v ->
+                        ingredients = ingredients.toMutableList().also { it[i] = v }
+                    },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+                )
+                if (!selecting) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("\u2191", fontSize = 16.sp, modifier = Modifier
                             .clickable(enabled = i > 0) { if (i > 0) ingredients = ingredients.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }
@@ -113,14 +218,14 @@ fun ReviewImportScreen(
                             .padding(2.dp))
                     }
                 }
-                if (i in ingHints) {
-                    Text(
-                        "amount missing from the scan, add it above",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(start = 16.dp),
-                    )
-                }
+            }
+            if (i in ingHints && !selecting) {
+                Text(
+                    "amount missing from the scan, add it above",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 16.dp),
+                )
             }
         }
         FilledTonalButton(onClick = { ingredients = ingredients + "" }, modifier = Modifier.padding(vertical = 4.dp)) {
@@ -129,7 +234,32 @@ fun ReviewImportScreen(
 
         Text("Steps", fontSize = 18.sp, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
         steps.forEachIndexed { i, line ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (selecting) Modifier.clickable { toggleStep(i) } else Modifier
+                    )
+                    .background(
+                        if (selecting && i in selectedSteps) MaterialTheme.colorScheme.secondaryContainer
+                        else Color.Transparent
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (selecting) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (i in selectedSteps) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.padding(start = 4.dp).size(22.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (i in selectedSteps) {
+                                Text("\u2713", fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimary)
+                            }
+                        }
+                    }
+                    SpacerWidth(6.dp)
+                }
                 OutlinedTextField(
                     value = steps[i],
                     onValueChange = { v ->
@@ -137,16 +267,18 @@ fun ReviewImportScreen(
                     },
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                 )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("\u2191", fontSize = 16.sp, modifier = Modifier
-                        .clickable(enabled = i > 0) { if (i > 0) steps = steps.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }
-                        .padding(2.dp))
-                    Text("x", fontSize = 14.sp, modifier = Modifier
-                        .clickable { steps = steps.toMutableList().also { it.removeAt(i) } }
-                        .padding(2.dp))
-                    Text("\u2193", fontSize = 16.sp, modifier = Modifier
-                        .clickable(enabled = i < steps.size - 1) { if (i < steps.size - 1) steps = steps.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }
-                        .padding(2.dp))
+                if (!selecting) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("\u2191", fontSize = 16.sp, modifier = Modifier
+                            .clickable(enabled = i > 0) { if (i > 0) steps = steps.toMutableList().also { l -> val t = l[i - 1]; l[i - 1] = l[i]; l[i] = t } }
+                            .padding(2.dp))
+                        Text("x", fontSize = 14.sp, modifier = Modifier
+                            .clickable { steps = steps.toMutableList().also { it.removeAt(i) } }
+                            .padding(2.dp))
+                        Text("\u2193", fontSize = 16.sp, modifier = Modifier
+                            .clickable(enabled = i < steps.size - 1) { if (i < steps.size - 1) steps = steps.toMutableList().also { l -> val t = l[i + 1]; l[i + 1] = l[i]; l[i] = t } }
+                            .padding(2.dp))
+                    }
                 }
             }
         }
@@ -168,6 +300,11 @@ fun ReviewImportScreen(
             TextButton(onClick = onCancel) { Text("Cancel") }
         }
     }
+}
+
+@Composable
+private fun SpacerWidth(w: androidx.compose.ui.unit.Dp) {
+    androidx.compose.foundation.layout.Spacer(Modifier.width(w))
 }
 
 private suspend fun saveReview(

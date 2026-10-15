@@ -89,6 +89,30 @@ object OcrParser {
         "^(?:instructions?|instruction|directions?|method|steps?|preparation|procedure)\\s*:?\\s*$",
         RegexOption.IGNORE_CASE,
     )
+
+    // Layout-aware section detection: the scan only ever fills a recipe from
+    // inside a labeled block, so page headers, description prose, timing
+    // notes and storage instructions (which live outside the blocks) never
+    // reach the ingredient list. Headers survive OCR in variants
+    // ("lngredients", "Directlons"), so match the stable middle of the word,
+    // and only on short lines so a step mentioning ingredients never counts.
+    private fun headerKey(line: String): String {
+        val l = line.trim().trimEnd(':', ' ', '.').lowercase()
+        return if (l.length <= 30 && l.split(Regex("\\s+")).size <= 4) l else ""
+    }
+
+    private fun isIngHeader(line: String): Boolean {
+        val l = headerKey(line)
+        return l.contains("ngredient") || l.contains("ngredlent") || l.contains("ngredtent") ||
+            l.contains("what you")
+    }
+
+    private fun isStepHeader(line: String): Boolean {
+        val l = headerKey(line)
+        return l.contains("nstruct") || l.contains("irect") || l.contains("reparat") ||
+            l.contains("rocedure") || l == "method" || l.startsWith("method ") ||
+            l == "steps" || l.startsWith("steps ")
+    }
     private val PROSE_LINE_RE = Regex(
         "^(?:you may|tip|tips|note|variation|make ahead|storage|to serve|serving suggestion|" +
             "store|stored|keeps?|sealed|airtight|wrap(?:ped)?|and|or|until|with|for|in)\\b",
@@ -210,11 +234,13 @@ object OcrParser {
         val titleLineIdx = lines.indexOfFirst { it.equals(title, ignoreCase = true) }
         val startIdx = if (titleLineIdx >= 0) titleLineIdx + 1 else 0
 
-        val ingIdx = lines.indexOfFirst { SECTION_ING_RE.matches(it) }
+        val ingIdx = lines.indexOfFirst { isIngHeader(it) }
         var stepIdx = -1
         if (ingIdx >= 0) {
-            val rel = lines.subList(ingIdx + 1, lines.size).indexOfFirst { SECTION_STEP_RE.matches(it) }
+            val rel = lines.subList(ingIdx + 1, lines.size).indexOfFirst { isStepHeader(it) }
             if (rel >= 0) stepIdx = ingIdx + 1 + rel
+        } else {
+            stepIdx = lines.indexOfFirst { isStepHeader(it) }
         }
 
         val ingredients = mutableListOf<ParsedIngredient>()
@@ -222,7 +248,13 @@ object OcrParser {
 
         when {
             ingIdx >= 0 -> {
-                val ingLines = lines.subList(ingIdx + 1, if (stepIdx >= 0) stepIdx else lines.size)
+                // Strict window: only the lines between the Ingredients
+                // header and the next section header are ingredients.
+                // Everything before the header or after the next one (page
+                // headers, description prose, timing notes, storage
+                // instructions) stays out of the recipe.
+                val windowEnd = if (stepIdx >= 0) stepIdx else lines.size
+                val ingLines = lines.subList(ingIdx + 1, windowEnd)
                 val stepLines = if (stepIdx >= 0) lines.subList(stepIdx + 1, lines.size) else emptyList()
                 ingLines.forEach { l ->
                     if (isIngredientNoise(l)) return@forEach
@@ -239,6 +271,13 @@ object OcrParser {
                     }
                 }
                 steps.addAll(parseSteps(stepLines))
+                if (stepIdx < 0) {
+                    // No instructions header on the card: sweep the tail for
+                    // step-shaped lines only, so trailing prose and storage
+                    // notes stay out of the steps too.
+                    val tail = lines.subList(ingIdx + 1, lines.size).filter { looksLikeStep(it) && !isIngredientNoise(it) }
+                    steps.addAll(parseSteps(tail))
+                }
             }
             else -> {
                 var lastWasStep = false
