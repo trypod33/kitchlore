@@ -58,7 +58,7 @@ object OcrParser {
         "serve", "top", "drizzle", "season", "chop", "dice", "mince",
         "slice", "grease", "line", "knead", "marinate", "refrigerate",
         "seal", "soften", "whip",
-        "pulse", "process", "whirl", "liquefy", "puree", "microwave",
+        "pulse", "process", "whirl", "liquefy", "puree", "microwave", "blend",
         "steep", "strain", "toast", "zest", "juice",
         "transfer", "combine", "layer", "sprinkle", "melt", "brown",
         "garnish", "rest", "carve", "brush", "coat", "press", "shape",
@@ -253,9 +253,29 @@ object OcrParser {
                 // Everything before the header or after the next one (page
                 // headers, description prose, timing notes, storage
                 // instructions) stays out of the recipe.
-                val windowEnd = if (stepIdx >= 0) stepIdx else lines.size
+                // No instructions header on the card: the first step-shaped
+                // line after the ingredients header ends the ingredient block
+                // (cards list ingredients, then instructions), so step lines
+                // cannot ride in with the amounts.
+                val softEnd = if (stepIdx >= 0) stepIdx else {
+                    val rel = lines.subList(ingIdx + 1, lines.size)
+                        .indexOfFirst { looksLikeStep(it) && !isIngredientNoise(it) }
+                    if (rel >= 0) ingIdx + 1 + rel else lines.size
+                }
+                val windowEnd = if (stepIdx >= 0) stepIdx else softEnd
                 val ingLines = lines.subList(ingIdx + 1, windowEnd)
-                val stepLines = if (stepIdx >= 0) lines.subList(stepIdx + 1, lines.size) else emptyList()
+                val stepLines = if (stepIdx >= 0) {
+                    // Steps keep everything after their header, except a plain
+                    // measurement line with no step verb anywhere ("pkg. (8
+                    // oz.) cream cheese"): that is an ingredient the header
+                    // match ran past, not an instruction.
+                    lines.subList(stepIdx + 1, lines.size).filter { l ->
+                        !isMeasurementLine(l) || looksLikeStep(l) || hasStepVerb(l)
+                    }
+                } else {
+                    lines.subList(softEnd, lines.size)
+                        .filter { looksLikeStep(it) && !isIngredientNoise(it) }
+                }
                 ingLines.forEach { l ->
                     if (isIngredientNoise(l)) return@forEach
                     val prev = ingredients.lastOrNull()
@@ -272,11 +292,10 @@ object OcrParser {
                 }
                 steps.addAll(parseSteps(stepLines))
                 if (stepIdx < 0) {
-                    // No instructions header on the card: sweep the tail for
-                    // step-shaped lines only, so trailing prose and storage
-                    // notes stay out of the steps too.
-                    val tail = lines.subList(ingIdx + 1, lines.size).filter { looksLikeStep(it) && !isIngredientNoise(it) }
-                    steps.addAll(parseSteps(tail))
+                    // The ingredient block ended at the first step-shaped
+                    // line; the measurement shape signal is the backstop for
+                    // whatever still slipped in.
+                    ingredients.removeAll { ing -> !isMeasurementLine(ing.rawText.ifBlank { ing.name }) }
                 }
             }
             else -> {
@@ -311,8 +330,13 @@ object OcrParser {
                             )
                             lastWasStep = false
                         }
-                        else -> {
+                        isMeasurementLine(l) -> {
                             ingredients.add(parseIngredientLine(l, rules))
+                            lastWasStep = false
+                        }
+                        else -> {
+                            // No amount, no unit, not a wrapped tail: prose,
+                            // footer text or a stray fragment. Out.
                             lastWasStep = false
                         }
                     }
@@ -510,6 +534,11 @@ object OcrParser {
                 w.split(Regex("\\s+")).size == 1 && (w in PAGE_HEADERS || w in NOISE_WORDS)
             }
         ) return true
+        // OCR welds footer brands into one word ("GREATAMERICAN"): a single
+        // all-caps token that long is page furniture, never an ingredient.
+        if (clean.length >= 11 && clean.none { it.isDigit() } &&
+            clean.none { it.isLowerCase() } && clean.any { it.isLetter() }
+        ) return true
         // Long all-caps banner text ("CMOMI VXXXVII GREAT AMERI"): page
         // decoration, never content. A one-word all-caps line still passes so
         // an ingredient written in caps survives.
@@ -541,6 +570,11 @@ object OcrParser {
         if (GARBLED_QTY_LINE_RE.containsMatchIn(t)) return false
         val tokens = t.split(Regex("\\s+"))
         if (tokens.size > 3) return false
+        // A line that talks ("mixture is soft, creamy and") is never the
+        // tail of the ingredient above it.
+        if (Regex("\\b(?:is|are|should|make|makes|will|can)\\b", RegexOption.IGNORE_CASE)
+            .containsMatchIn(t)
+        ) return false
         val c = tokens[0][0]
         if (c.isDigit() || c.isUpperCase()) return false
         if (parseAmount(tokens[0]) != null) return false
@@ -595,9 +629,10 @@ object OcrParser {
         ) return true
         // Known non-food phrases the scanner lifts out of notes.
         if (line.trim().trimEnd('.', ',').lowercase() in PHRASE_NOISE) return true
-        // A truncated fragment ("oth,", "glass j") is the scanner chewing a
-        // wrapped line, never an ingredient.
+        // A bare number with nothing after it is a step number or a page
+        // fragment, never an ingredient.
         val frag = line.trim().split(Regex("\\s+"))
+        if (frag.size == 1 && parseAmount(frag[0]) != null) return true
         if (frag.size in 1..3 && parseAmount(frag[0]) == null &&
             frag[0].trimEnd(',', '.', ';').lowercase() !in UNITS
         ) {
@@ -605,6 +640,25 @@ object OcrParser {
             if (last.length <= 2 || frag.joinToString(" ").length <= 4) return true
         }
         return false
+    }
+
+    // The shape signal for fallback paths: real ingredient lines carry a
+    // measurement, either a leading amount (clean or OCR-garbled) or a unit
+    // somewhere on the line. Prose, footer text and stray fragments carry
+    // neither, so this is what keeps them out when the card gives up no
+    // section headers.
+    private fun isMeasurementLine(line: String): Boolean {
+        val t = line.trim()
+        if (LEADING_QTY_RE.containsMatchIn(t) || LEADING_QTY_ALT_RE.containsMatchIn(t)) return true
+        if (GARBLED_QTY_LINE_RE.containsMatchIn(t)) return true
+        val words = t.lowercase().split(Regex("[^a-z]+")).filter { it.isNotEmpty() }
+        return words.any { it in UNITS }
+    }
+
+    // Does any known step verb appear anywhere on the line? A numbered step
+    // ("1. Preheat the oven") is amount-led but still a step.
+    private fun hasStepVerb(line: String): Boolean {
+        return line.lowercase().split(Regex("[^a-z]+")).any { it in STEP_VERBS }
     }
 
     private fun looksLikeStep(line: String): Boolean {
