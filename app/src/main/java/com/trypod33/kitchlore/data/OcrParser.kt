@@ -103,8 +103,7 @@ object OcrParser {
 
     private fun isIngHeader(line: String): Boolean {
         val l = headerKey(line)
-        return l.contains("ngredient") || l.contains("ngredlent") || l.contains("ngredtent") ||
-            l.contains("what you")
+        return l.contains("gredient") || l.contains("what you")
     }
 
     private fun isStepHeader(line: String): Boolean {
@@ -115,7 +114,8 @@ object OcrParser {
     }
     private val PROSE_LINE_RE = Regex(
         "^(?:you may|tip|tips|note|variation|make ahead|storage|to serve|serving suggestion|" +
-            "store|stored|keeps?|sealed|airtight|wrap(?:ped)?|and|or|until|with|for|in)\\b",
+            "store|stored|keeps?|sealed|airtight|wrap(?:ped)?|and|or|until|with|for|in|" +
+            "from|may|inside|outside|these|this|they)\\b",
         RegexOption.IGNORE_CASE,
     )
 
@@ -484,6 +484,11 @@ object OcrParser {
         "well", "just", "only", "gifts", "wonderful",
     )
 
+    private val PHRASE_NOISE = setOf(
+        "room temperature", "at room temperature", "well wrapped", "to serve",
+        "or until firm", "unless otherwise noted",
+    )
+
     private fun isNoise(line: String): Boolean {
         if (SERVINGS_RE.containsMatchIn(line) || PREP_RE.containsMatchIn(line) || COOK_RE.containsMatchIn(line)) {
             return true
@@ -576,6 +581,20 @@ object OcrParser {
         // with no amount and no unit anywhere is prose, not an ingredient.
         val proseWords = line.trim().split(Regex("\\s+"))
         if (proseWords.size >= 8 && wordTokens.none { it in UNITS } && !Regex("\\d").containsMatchIn(line)) return true
+        // Prose verbs: a line that talks ("outside is dry", "these make
+        // wonderful gifts") is a sentence, not an ingredient.
+        if (!LEADING_QTY_RE.containsMatchIn(line.trim()) &&
+            !LEADING_QTY_ALT_RE.containsMatchIn(line.trim()) &&
+            Regex("\\b(?:is|are|should|make|makes|will|can)\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(line)
+        ) return true
+        // A sentence period on a line with no amount and no unit: prose.
+        if (line.trim().endsWith(".") && !LEADING_QTY_RE.containsMatchIn(line.trim()) &&
+            !LEADING_QTY_ALT_RE.containsMatchIn(line.trim()) &&
+            wordTokens.none { it in UNITS } && line.trim().split(Regex("\\s+")).size >= 3
+        ) return true
+        // Known non-food phrases the scanner lifts out of notes.
+        if (line.trim().trimEnd('.', ',').lowercase() in PHRASE_NOISE) return true
         // A truncated fragment ("oth,", "glass j") is the scanner chewing a
         // wrapped line, never an ingredient.
         val frag = line.trim().split(Regex("\\s+"))
