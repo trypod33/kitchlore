@@ -91,7 +91,7 @@ object OcrParser {
     )
     private val PROSE_LINE_RE = Regex(
         "^(?:you may|tip|tips|note|variation|make ahead|storage|to serve|serving suggestion|" +
-            "and|or|until|with|for)\\b",
+            "store|stored|keeps?|sealed|airtight|wrap(?:ped)?|and|or|until|with|for|in)\\b",
         RegexOption.IGNORE_CASE,
     )
 
@@ -429,6 +429,22 @@ object OcrParser {
         "^(?:\\d+|[¼½¾⅓⅔⅛⅜⅝⅞])(?:\\s|\\d*[/½¾⅓⅔⅛⅜⅝⅞])",
     )
 
+    // Page furniture the scanner sweeps up: section headers and banner words.
+    private val PAGE_HEADERS = setOf(
+        "recipes", "recipe", "kitchen", "cookbook", "favorites", "favorite",
+        "index", "contents", "page",
+    )
+
+    // One-word fragments prose leaves behind when the scanner chops a
+    // paragraph into the ingredient grid. Never ingredient names.
+    private val NOISE_WORDS = setOf(
+        "time", "them", "they", "these", "this", "that", "from", "your", "you",
+        "any", "all", "and", "the", "for", "with", "when", "until", "after",
+        "before", "then", "also", "once", "while", "its", "it's", "are", "was",
+        "were", "over", "into", "onto", "each", "every", "some", "more", "very",
+        "well", "just", "only", "gifts", "wonderful",
+    )
+
     private fun isNoise(line: String): Boolean {
         if (SERVINGS_RE.containsMatchIn(line) || PREP_RE.containsMatchIn(line) || COOK_RE.containsMatchIn(line)) {
             return true
@@ -444,6 +460,19 @@ object OcrParser {
             (clean.any { !it.isLetterOrDigit() && it != ' ' } || clean.split(Regex("\\s+")).size >= 2)
         ) return true
         if (clean.length <= 30 && clean.lowercase() in JUNK_EXACT) return true
+        // Section headers ("RECIPES") and stray one-word prose fragments.
+        if (clean.none { it.isDigit() } &&
+            clean.trimEnd(',', '.', ';', ':', '!', '?').lowercase().let { w ->
+                w.split(Regex("\\s+")).size == 1 && (w in PAGE_HEADERS || w in NOISE_WORDS)
+            }
+        ) return true
+        // Long all-caps banner text ("CMOMI VXXXVII GREAT AMERI"): page
+        // decoration, never content. A one-word all-caps line still passes so
+        // an ingredient written in caps survives.
+        if (clean.length > 20 && clean.none { it.isDigit() } &&
+            clean.none { it.isLowerCase() } && clean.any { it.isLetter() } &&
+            clean.split(Regex("\\s+")).size >= 2
+        ) return true
         return false
     }
 
@@ -496,8 +525,27 @@ object OcrParser {
         // A bare temperature ("350°F", "450 degrees F") is not an ingredient.
         if (TEMP_LINE_RE.containsMatchIn(line.trim())) return true
         // Tips/notes prose and its wrapped fragments ("You may prepare and bake",
-        // "and freeze them, well wrapped").
+        // "and freeze them, well wrapped", storage instructions).
         if (PROSE_LINE_RE.containsMatchIn(line.trim())) return true
+        // A timing note swept in with the ingredients ("Standing time: 4 hrs."):
+        // an ingredient line never carries a duration without a food unit.
+        val wordTokens = line.lowercase().split(Regex("[^a-z]+")).filter { it.isNotEmpty() }
+        val durationWords = setOf("hr", "hrs", "hour", "hours", "minute", "minutes", "min", "mins", "seconds", "overnight")
+        if (wordTokens.any { it in durationWords } && wordTokens.none { it in UNITS }) return true
+        // Description prose the scanner chopped into the grid ("These mints
+        // make wonderful gifts from your kitchen at any time"): a long line
+        // with no amount and no unit anywhere is prose, not an ingredient.
+        val proseWords = line.trim().split(Regex("\\s+"))
+        if (proseWords.size >= 8 && wordTokens.none { it in UNITS } && !Regex("\\d").containsMatchIn(line)) return true
+        // A truncated fragment ("oth,", "glass j") is the scanner chewing a
+        // wrapped line, never an ingredient.
+        val frag = line.trim().split(Regex("\\s+"))
+        if (frag.size in 1..3 && parseAmount(frag[0]) == null &&
+            frag[0].trimEnd(',', '.', ';').lowercase() !in UNITS
+        ) {
+            val last = frag.last().trimEnd(',', '.', ';', ':')
+            if (last.length <= 2 || frag.joinToString(" ").length <= 4) return true
+        }
         return false
     }
 

@@ -243,7 +243,6 @@ fun RecipeListScreen(
     onPhoto: () -> Unit,
     onDoc: () -> Unit,
     onHunt: () -> Unit,
-    onPantry: () -> Unit,
     onSettings: () -> Unit,
     onCategory: (String) -> Unit,
 ) {
@@ -374,9 +373,6 @@ fun RecipeListScreen(
         ) {
             FilledTonalButton(onClick = onHunt, contentPadding = PaddingValues(horizontal = 10.dp)) {
                 Text("Recipe hunt", maxLines = 1)
-            }
-            FilledTonalButton(onClick = onPantry, contentPadding = PaddingValues(horizontal = 10.dp)) {
-                Text("Pantry", maxLines = 1)
             }
             OutlinedButton(
                 onClick = onSettings,

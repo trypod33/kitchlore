@@ -1,21 +1,22 @@
 package com.trypod33.kitchlore.ui
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -46,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trypod33.kitchlore.data.HtmlRecipeParser
 import com.trypod33.kitchlore.data.KeylessSearch
+import com.trypod33.kitchlore.data.WebSearchEngine
 import com.trypod33.kitchlore.data.fetchPage
 import com.trypod33.kitchlore.data.insertWebRecipe
 import com.trypod33.kitchlore.data.local.AppDatabase
@@ -56,12 +58,12 @@ import kotlinx.coroutines.withContext
 import java.net.URI
 
 /**
- * Recipe hunt over keyless web search: a query goes to public search engines
- * (no API keys, no accounts), results come back as a list, and a tap imports
- * the recipe through the same page parser the paste-a-link flow uses. The
- * query walks down from the whole phrase to stop-word-stripped and token-pair
- * tries, so real dishes still surface when the exact phrase comes up empty.
- * Anything past the whole phrase is a related match and the UI says so.
+ * Recipe hunt and pantry in one screen. One box takes either a dish ("braised
+ * pork chops"), an appliance ("ninja foodi xl"), drinks ("margarita"), or
+ * what is on hand ("chicken, rice"), and no mode switch: the library matches
+ * first, instantly and offline, then the web results arrive through the
+ * hidden in-app browser search. A tap on a web card imports the recipe
+ * through the same page parser the paste-a-link flow uses.
  */
 object WebHunt {
     /** Words that match everything and nothing, stripped before falling back to smaller queries. */
@@ -73,24 +75,38 @@ object WebHunt {
 
     data class SmartResult(val exact: Boolean, val hits: List<KeylessSearch.Result>)
 
-    fun searchSmart(query: String): SmartResult {
+    suspend fun searchSmart(context: Context, query: String): SmartResult {
         val q = query.trim()
         if (q.isEmpty()) return SmartResult(true, emptyList())
-        val exact = KeylessSearch.search(q)
-        if (exact.isNotEmpty()) return SmartResult(true, exact)
+
+        // The hidden in-app browser search first: it reads like a person's
+        // browser, so engines that refuse plain app requests answer it.
+        val direct = WebSearchEngine.search(context, q)
+        if (direct.isNotEmpty()) return SmartResult(true, direct)
+
         val tokens = q.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() && it !in STOP_WORDS }
         val cleaned = tokens.joinToString(" ")
+        // A bare ingredient or appliance reads as noise to a search engine;
+        // as "<query> recipes" it lands on real recipe pages.
+        val shaped = cleaned.ifEmpty { q.lowercase() }
+        if (!shaped.endsWith("recipe") && !shaped.endsWith("recipes")) {
+            val viaRecipes = WebSearchEngine.search(context, "$shaped recipes", timeoutMs = 9_000L)
+            if (viaRecipes.isNotEmpty()) return SmartResult(false, viaRecipes)
+        }
+        if (cleaned.isNotEmpty() && !cleaned.equals(q, ignoreCase = true)) {
+            val cleanedHits = WebSearchEngine.search(context, cleaned, timeoutMs = 9_000L)
+            if (cleanedHits.isNotEmpty()) return SmartResult(false, cleanedHits)
+        }
+
+        // Plain-HTTP fallbacks for the tail tiers, in case the hidden browser
+        // is blocked everywhere too.
+        val exact = KeylessSearch.search(q)
+        if (exact.isNotEmpty()) return SmartResult(true, exact)
+        val withRecipes = KeylessSearch.search("$shaped recipes")
+        if (withRecipes.isNotEmpty()) return SmartResult(false, withRecipes)
         if (cleaned.isNotEmpty() && !cleaned.equals(q, ignoreCase = true)) {
             val cleanedHits = KeylessSearch.search(cleaned)
             if (cleanedHits.isNotEmpty()) return SmartResult(false, cleanedHits)
-        }
-        // A bare ingredient like "chicken" reads as noise to a search engine; as
-        // "chicken recipes" it lands on real recipe pages. Try it before the
-        // smaller token falls back.
-        val recipeQuery = cleaned.ifEmpty { q.lowercase() }
-        if (!recipeQuery.endsWith("recipe") && !recipeQuery.endsWith("recipes")) {
-            val withRecipes = KeylessSearch.search("$recipeQuery recipes")
-            if (withRecipes.isNotEmpty()) return SmartResult(false, withRecipes)
         }
         val seen = LinkedHashMap<String, KeylessSearch.Result>()
         for (i in 0 until tokens.size - 1) {
@@ -166,6 +182,85 @@ private val APPLIANCES = listOf(
 
 private fun applianceIn(query: String): String? = APPLIANCES.firstOrNull { query.lowercase().contains(it) }
 
+// Pantry items live in the app's own shared preferences, one per line,
+// nothing leaves the phone. Same store the old Pantry screen used.
+private fun loadHuntPantry(context: Context): List<String> =
+    (context.getSharedPreferences("kitchlore_pantry", Context.MODE_PRIVATE)
+        .getString("items", "") ?: "")
+        .split("|").map { it.trim() }.filter { it.isNotBlank() }
+
+private fun saveHuntPantry(context: Context, items: List<String>) {
+    context.getSharedPreferences("kitchlore_pantry", Context.MODE_PRIVATE)
+        .edit().putString("items", items.joinToString("|")).apply()
+}
+
+/**
+ * The library half of the hunt: a recipe scores a point per term it matches
+ * in its title, tags or notes, plus a point for each ingredient the term
+ * matches by whole word, and a bonus when the whole phrase is in the title.
+ */
+private suspend fun matchLibrary(db: AppDatabase, terms: List<String>, pantryMode: Boolean): List<Pair<Recipe, Int>> =
+    withContext(Dispatchers.IO) {
+        val lowered = terms.map { it.lowercase() }.filter { it.isNotEmpty() }
+        if (lowered.isEmpty()) return@withContext emptyList()
+        val phrases = if (pantryMode) lowered else lowered + lowered.joinToString(" ")
+        val ings = db.ingredientDao().getAllOnce().groupBy { it.recipeId }
+        db.recipeDao().getAllRecipesOnce().mapNotNull { r ->
+            val names = (ings[r.id] ?: emptyList()).map { it.name.lowercase() }
+            var score = 0
+            lowered.forEach { term ->
+                val hay = (r.title + " " + r.tagsCsv + " " + (r.sourceNote ?: "")).lowercase()
+                if (hay.contains(term)) score++
+                if (names.any { matchesPantryWord(it, term) }) score++
+            }
+            if (!pantryMode && r.title.lowercase().contains(phrases.last())) score += 2
+            if (score > 0) r to score else null
+        }.sortedByDescending { it.second }.take(12)
+    }
+
+@Composable
+private fun LibraryCard(recipe: Recipe, subtitle: String, onOpen: () -> Unit) {
+    ResultCard {
+        Row(
+            Modifier.fillMaxWidth()
+                .clickable(onClick = onOpen)
+                .height(72.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (recipe.originalImagePath != null) {
+                RecipeThumbnail(
+                    recipe.originalImagePath,
+                    Modifier.height(72.dp).fillMaxWidth(0.2f),
+                )
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.padding(start = 12.dp).size(44.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            recipe.title.trim().take(1).uppercase(),
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                }
+            }
+            Column(Modifier.padding(start = 12.dp, end = 12.dp)) {
+                Text(recipe.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                Text(
+                    subtitle,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit, onOpenWeb: (String) -> Unit) {
     val context = LocalContext.current
@@ -174,11 +269,64 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var loading by remember { mutableStateOf(false) }
     var importingUrl by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
-    var hits by remember { mutableStateOf<List<KeylessSearch.Result>>(emptyList()) }
-    var localHits by remember { mutableStateOf<List<Recipe>>(emptyList()) }
-    var exactMatch by remember { mutableStateOf(true) }
+    var pantryItems by remember { mutableStateOf(loadHuntPantry(context)) }
+    var libraryHits by remember { mutableStateOf<List<Pair<Recipe, Int>>>(emptyList()) }
+    var webHits by remember { mutableStateOf<List<KeylessSearch.Result>>(emptyList()) }
+    var pantryMode by remember { mutableStateOf(false) }
+    var webLabel by remember { mutableStateOf("From the web") }
     var searched by remember { mutableStateOf(false) }
-    var webLabel by remember { mutableStateOf("More from the web") }
+
+    fun runSearch() {
+        val q = query.trim()
+        if (q.isEmpty() && pantryItems.isEmpty()) {
+            message = "Type what you are cooking, or what you have."
+            return
+        }
+        loading = true
+        message = null
+        searched = false
+        libraryHits = emptyList()
+        webHits = emptyList()
+        val terms = q.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        val usePantry = terms.isEmpty()
+        pantryMode = usePantry
+        val libTerms = if (usePantry) pantryItems.take(6) else terms
+        val applianceHit = terms.firstOrNull()?.let { applianceIn(it) }
+        val webQuery = applianceHit?.let { a ->
+            val named = if (a == "instapot") "instant pot" else a
+            terms.joinToString(" ").replace(a, named, ignoreCase = true).trim()
+        } ?: terms.joinToString(" ")
+        webLabel = when {
+            usePantry -> "From the web"
+            applianceHit != null -> applianceHit.replaceFirstChar { it.uppercase() } + " picks from the web"
+            else -> "From the web"
+        }
+        scope.launch {
+            // Library first: instant, offline.
+            libraryHits = matchLibrary(db, libTerms, usePantry)
+            searched = true
+            val web = withContext(Dispatchers.IO) {
+                if (usePantry) {
+                    val counts = HashMap<String, Int>()
+                    val byUrl = LinkedHashMap<String, KeylessSearch.Result>()
+                    pantryItems.take(3).forEach { p ->
+                        WebHunt.searchSmart(context, "$p recipes").hits.forEach { h ->
+                            counts[h.url] = (counts[h.url] ?: 0) + 1
+                            byUrl.putIfAbsent(h.url, h)
+                        }
+                    }
+                    counts.entries.sortedByDescending { it.value }.take(12).mapNotNull { byUrl[it.key] }
+                } else {
+                    WebHunt.searchSmart(context, webQuery).hits
+                }
+            }
+            webHits = web
+            if (libraryHits.isEmpty() && web.isEmpty()) {
+                message = "Nothing came back for that. Try fewer words, or paste a link to a recipe page."
+            }
+            loading = false
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -188,7 +336,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            label = { Text("What are you cooking?") },
+            label = { Text("What are you cooking, or what do you have?") },
             placeholder = { Text("braised pork chops, chicken in the ninja foodi...") },
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -196,60 +344,83 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
-                onClick = {
-                    val q = query.trim()
-                    if (q.isEmpty()) return@Button
-                    loading = true
-                    message = null
-                    searched = false
-                    hits = emptyList()
-                    localHits = emptyList()
-                    val applianceHit = applianceIn(q)
-                    val webQuery = applianceHit?.let { a ->
-                        val named = if (a == "instapot") "instant pot" else a
-                        q.replace(a, named, ignoreCase = true).trim()
-                    } ?: q
-                    webLabel = applianceHit?.let { a -> a.replaceFirstChar { it.uppercase() } + " picks from the web" }
-                        ?: "More from the web"
-                    scope.launch {
-                        val smart = withContext(Dispatchers.IO) { WebHunt.searchSmart(webQuery) }
-                        hits = smart.hits
-                        exactMatch = smart.exact
-                        // The web engines can refuse an automated caller outright.
-                        // When they all do, the closest saved recipes step in so
-                        // the hunt never dead-ends on an empty screen.
-                        localHits = if (smart.hits.isEmpty()) withContext(Dispatchers.IO) {
-                            val words = webQuery.lowercase().split(Regex("\\s+"))
-                                .filter { it.isNotBlank() && it.length > 2 }
-                            db.recipeDao().getAllRecipesOnce().filter { r ->
-                                val hay = (r.title + " " + r.tagsCsv + " " + (r.sourceNote ?: "")).lowercase()
-                                words.any { hay.contains(it) }
-                            }.take(6)
-                        } else emptyList()
-                        searched = true
-                        loading = false
-                    }
-                },
+                onClick = { runSearch() },
                 enabled = !loading,
                 modifier = Modifier.weight(1f).height(48.dp),
                 shape = RoundedCornerShape(14.dp),
             ) { Text(if (loading) "Searching..." else "Search") }
-            OutlinedButton(
-                onClick = { onOpenWeb("") },
-                enabled = !loading,
-                modifier = Modifier.height(48.dp),
-                shape = RoundedCornerShape(14.dp),
-            ) { Text("Paste link") }
+            if (query.trim().isNotEmpty()) {
+                OutlinedButton(
+                    onClick = {
+                        val terms = query.trim().split(",").map { it.trim() }
+                            .filter { it.isNotEmpty() && pantryItems.none { p -> p.equals(it, ignoreCase = true) } }
+                        if (terms.isNotEmpty()) {
+                            pantryItems = pantryItems + terms
+                            saveHuntPantry(context, pantryItems)
+                            message = "Saved to pantry"
+                        }
+                    },
+                    enabled = !loading,
+                    modifier = Modifier.height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("Save to pantry") }
+            } else {
+                OutlinedButton(
+                    onClick = { onOpenWeb("") },
+                    enabled = !loading,
+                    modifier = Modifier.height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("Paste link") }
+            }
+        }
+        if (pantryItems.isNotEmpty()) {
+            Column(Modifier.horizontalScroll(rememberScrollState())) {
+                pantryItems.chunked(4).forEach { rowItems ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        rowItems.forEach { item ->
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(item, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp))
+                                    Text(
+                                        "  x",
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .clickable {
+                                                pantryItems = pantryItems.filterNot { it.equals(item, ignoreCase = true) }
+                                                saveHuntPantry(context, pantryItems)
+                                            }
+                                            .padding(end = 12.dp, top = 6.dp, bottom = 6.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         message?.let {
             Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (searched && hits.isNotEmpty()) {
-                item { SectionLabel(if (exactMatch) "Found these" else "Close enough") }
+            if (searched && libraryHits.isNotEmpty()) {
+                item { SectionLabel("From your library") }
             }
-            items(hits, key = { "web-" + it.url }) { r ->
+            items(libraryHits, key = { "local-" + it.first.id }) { (r, score) ->
+                LibraryCard(
+                    recipe = r,
+                    subtitle = if (pantryMode) "matches $score of your items  \u00B7  tap to open" else "in your library  \u00B7  tap to open",
+                    onOpen = { onOpen(r.id) },
+                )
+            }
+            if (searched && webHits.isNotEmpty()) {
+                item { SectionLabel(webLabel) }
+            }
+            items(webHits, key = { "web-" + it.url }) { r ->
                 ResultCard {
                     Row(
                         Modifier.fillMaxWidth()
@@ -303,44 +474,7 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                     }
                 }
             }
-            if (searched && !loading && localHits.isNotEmpty()) {
-                item { SectionLabel("From your library") }
-            }
-            items(localHits, key = { "local-" + it.id }) { r ->
-                ResultCard {
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .clickable(enabled = importingUrl == null) { onOpen(r.id) }
-                            .padding(horizontal = 12.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    r.title.trim().take(1).uppercase(),
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                )
-                            }
-                        }
-                        Column(Modifier.padding(start = 12.dp)) {
-                            Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                            Text(
-                                "saved recipe  \u00B7  tap to open",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                }
-            }
-            if (searched && !loading && hits.isEmpty() && localHits.isEmpty()) {
+            if (searched && !loading && libraryHits.isEmpty() && webHits.isEmpty()) {
                 item {
                     Text(
                         "Nothing came back for that.\nTry fewer words, or paste a link to a recipe page.",

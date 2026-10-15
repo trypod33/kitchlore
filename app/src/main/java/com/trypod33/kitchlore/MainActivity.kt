@@ -20,7 +20,6 @@ import com.trypod33.kitchlore.ui.CategoryRoute
 import com.trypod33.kitchlore.ui.LegalRoute
 import com.trypod33.kitchlore.ui.ThemePrefs
 import com.trypod33.kitchlore.ui.WebImportRoute
-import com.trypod33.kitchlore.ui.PantryRoute
 import com.trypod33.kitchlore.ui.RecipeHuntRoute
 import com.trypod33.kitchlore.ui.DocImportRoute
 import com.trypod33.kitchlore.ui.EditRecipeScreen
@@ -116,12 +115,6 @@ fun KitchloreNav(
                     onLegal = { screen = "legal" },
                 )
                 screen == "legal" -> LegalRoute(onBack = { screen = "settings" })
-                screen == "pantry" -> PantryRoute(
-                    db = db,
-                    onBack = { screen = "list" },
-                    onOpen = { screen = "detail:$it" },
-                    onOpenWeb = { screen = "import:$it" },
-                )
                 screen == "scan" -> ScanRoute(
                     db = db,
                     mode = "camera",
@@ -146,7 +139,6 @@ fun KitchloreNav(
                     onPhoto = { screen = "photo" },
                     onDoc = { screen = "doc" },
                     onHunt = { screen = "hunt" },
-                    onPantry = { screen = "pantry" },
                     onSettings = { screen = "settings" },
                     onCategory = { screen = "category:$it" },
                 )
