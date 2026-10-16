@@ -127,6 +127,18 @@ object OcrParser {
             l.contains("rocedure") || l == "method" || l.startsWith("method ") ||
             l == "steps" || l.startsWith("steps ")
     }
+    // Side sections that share a column with the recipe body ("Tips:",
+    // "Good served with:"). A body block stops when one of these appears,
+    // so their prose never rides into the ingredients or the steps.
+    private fun isNoiseSectionHeader(line: String): Boolean {
+        val l = headerKey(line)
+        return l in setOf(
+            "tips", "tip", "note", "notes", "hint", "hints", "good served with",
+            "serving suggestion", "variation", "variations", "make ahead",
+            "storage", "kitchen notes", "to serve",
+        )
+    }
+
     private val PROSE_LINE_RE = Regex(
         "^(?:you may|tip|tips|note|variation|make ahead|storage|to serve|serving suggestion|" +
             "store|stored|keeps?|sealed|airtight|wrap(?:ped)?|and|or|until|with|for|in|" +
@@ -147,7 +159,7 @@ object OcrParser {
         RegexOption.IGNORE_CASE,
     )
 
-    private val NUM_PREFIX_RE = Regex("^\\s*(?:step\\s*)?(\\d+)[.)\\]]?\\s*", RegexOption.IGNORE_CASE)
+    private val NUM_PREFIX_RE = Regex("^\\s*(?:step\\s*)?(\\d{1,2})(?:[.)\\]])?(?=\\s|$)", RegexOption.IGNORE_CASE)
     private val BULLET_PREFIX_RE = Regex("^\\s*[•*\\-–]\\s+")
     private val TIMER_RE = Regex(
         "(\\d+)\\s*(?:to\\s*\\d+\\s*)?(min(?:ute)?s?|hours?|hrs?|seconds?|secs?)\\b",
@@ -176,32 +188,42 @@ object OcrParser {
     private fun columnSplit(boxes: List<OcrLineBox>): Pair<List<OcrLineBox>, List<OcrLineBox>>? {
         val usable = boxes.filter { it.text.isNotBlank() && it.right > it.left && it.bottom > it.top }
         if (usable.size < 6) return null
+        val span = (usable.maxOf { it.right } - usable.minOf { it.left }).toDouble()
+        if (span <= 0) return null
         val starts = usable.map { it.left }.sorted()
-        var bestIdx = -1
+        // The widest start-edge gap is not always the real gutter: a title or
+        // caption stranded on the far left (Keith's chicken-salad card) opens
+        // a gap wider than the ingredient/steps gutter, and splitting there
+        // strands a 4-line fragment as the "left column" while the real two
+        // columns scramble together. Score every wide gap and keep the split
+        // that leaves two substantial side-by-side columns.
+        var best: Pair<List<OcrLineBox>, List<OcrLineBox>>? = null
+        var bestScore = 0
         var bestGap = 0.0
         for (i in 0 until starts.size - 1) {
-            val gap = starts[i + 1] - starts[i]
-            if (gap > bestGap) {
-                bestGap = gap.toDouble()
-                bestIdx = i
+            val gap = (starts[i + 1] - starts[i]).toDouble()
+            if (gap < span * 0.1) continue
+            val split = (starts[i] + starts[i + 1]) / 2.0
+            val leftCol = usable.filter { it.left < split }.sortedBy { it.top }
+            val rightCol = usable.filter { it.left >= split }.sortedBy { it.top }
+            if (leftCol.size < 3 || rightCol.size < 3) continue
+            // True side-by-side: the columns have to share vertical range,
+            // not stack like two pages.
+            val overlap = minOf(leftCol.maxOf { it.bottom }, rightCol.maxOf { it.bottom }) -
+                maxOf(leftCol.minOf { it.top }, rightCol.minOf { it.top })
+            val shorter = minOf(
+                leftCol.maxOf { it.bottom } - leftCol.minOf { it.top },
+                rightCol.maxOf { it.bottom } - rightCol.minOf { it.top },
+            ).toDouble()
+            if (overlap <= 0 || overlap < shorter * 0.3) continue
+            val score = minOf(leftCol.size, rightCol.size)
+            if (score > bestScore || (score == bestScore && gap > bestGap)) {
+                bestScore = score
+                bestGap = gap
+                best = leftCol to rightCol
             }
         }
-        val span = (usable.maxOf { it.right } - usable.minOf { it.left }).toDouble()
-        if (span <= 0 || bestGap < span * 0.2) return null
-        val split = (starts[bestIdx] + starts[bestIdx + 1]) / 2.0
-        val leftCol = usable.filter { it.left < split }.sortedBy { it.top }
-        val rightCol = usable.filter { it.left >= split }.sortedBy { it.top }
-        if (leftCol.size < 3 || rightCol.size < 3) return null
-        // True side-by-side: the columns have to share vertical range, not
-        // stack like two pages.
-        val overlap = minOf(leftCol.maxOf { it.bottom }, rightCol.maxOf { it.bottom }) -
-            maxOf(leftCol.minOf { it.top }, rightCol.minOf { it.top })
-        val shorter = minOf(
-            leftCol.maxOf { it.bottom } - leftCol.minOf { it.top },
-            rightCol.maxOf { it.bottom } - rightCol.minOf { it.top },
-        ).toDouble()
-        if (overlap <= 0 || overlap < shorter * 0.3) return null
-        return leftCol to rightCol
+        return best
     }
 
     private fun columnOrdered(boxes: List<OcrLineBox>): List<String>? {
@@ -298,8 +320,20 @@ object OcrParser {
                         ingredients.add(parseIngredientLine(l, rules))
                     }
                 }
-                val stepLines = joinHyphenLines(layout.second.map { OcrLexicon.fixLine(it.trim()) })
-                    .filter { !isMeasurementLine(it) || looksLikeStep(it) || hasStepVerb(it) }
+                // A measurement-shaped line that continues an OPEN step
+                // ("...toast pecans at" / "mayonnaise, yogurt or sour cream,")
+                // is that step's continuation, not an ingredient the header
+                // match ran past; only a measurement line after a CLOSED step
+                // is dropped here.
+                val stepJoined = joinHyphenLines(layout.second.map { OcrLexicon.fixLine(it.trim()) })
+                val stepLines = mutableListOf<String>()
+                var prevOpen = false
+                for (l in stepJoined) {
+                    if (!isMeasurementLine(l) || looksLikeStep(l) || hasStepVerb(l) || prevOpen) {
+                        stepLines.add(l)
+                        prevOpen = !SENTENCE_END_RE.containsMatchIn(l.trimEnd())
+                    }
+                }
                 steps.addAll(parseSteps(stepLines))
             }
             ingIdx >= 0 -> {
@@ -736,7 +770,7 @@ object OcrParser {
         "simmer", "boil", "brown", "drain", "pour", "sprinkle", "garnish", "enjoy",
         "refrigerate", "freeze", "marinate", "broil", "melt", "beat", "knead", "roll",
         "spread", "layer", "season", "taste", "remove", "return", "repeat", "combine",
-        "trim", "peel", "parboil", "reduce",
+        "trim", "peel", "parboil", "reduce", "toast", "break", "pare",
         "add", "heat", "cook", "cut", "slice", "chop", "blend", "shape", "fill", "place",
         "arrange", "meanwhile", "preheat", "spray", "grease", "brush", "press", "pat",
         "dip", "coat", "toss", "wait", "let", "salt",
@@ -769,9 +803,19 @@ object OcrParser {
         if (text.isBlank()) return
         val words = text.split(Regex("\\s+"))
         val firstWord = words[0].trimEnd('.', '!', '?', ',').lowercase()
-        if (words.size == 1 && !STEP_VERBS.contains(firstWord)) return
         val prev = out.lastOrNull()
         val prevOpen = prev != null && !SENTENCE_END_RE.containsMatchIn(prev.instructionText.trimEnd())
+        if (words.size == 1 && !STEP_VERBS.contains(firstWord)) {
+            // The wrapped tail of an open step ("...pepper and brown" /
+            // "sugar.") is that step's ending, not junk to drop.
+            if (prev != null && prevOpen) {
+                out[out.size - 1] = ParsedStep(
+                    (prev.instructionText + " " + text).trim(),
+                    prev.timerSeconds ?: timerFor(text),
+                )
+            }
+            return
+        }
         val startsNew = hasNum || prev == null ||
             (words[0].firstOrNull()?.isUpperCase() == true && (!prevOpen || verbStart(text)))
         // Description prose ("creamy, delicious, and quick to prepare as
@@ -871,16 +915,21 @@ object OcrParser {
         for (col in columns) {
             val headers = col.mapIndexedNotNull { i, b ->
                 when {
-                    isIngHeader(b.text) -> i to true
-                    isStepHeader(b.text) -> i to false
+                    isIngHeader(b.text) -> i to 'i'
+                    isStepHeader(b.text) -> i to 's'
+                    isNoiseSectionHeader(b.text) -> i to 'n'
                     else -> null
                 }
             }
             if (headers.isEmpty()) continue
-            for ((pos, isIng) in headers) {
+            for ((pos, kind) in headers) {
+                if (kind == 'n') continue
+                // A section body ends at the next header of any kind: the
+                // ingredients block must not run on into "Tips:" or "Good
+                // served with:" text that shares its column.
                 val stop = headers.firstOrNull { it.first > pos }?.first ?: col.size
                 val body = col.subList(pos + 1, stop).map { it.text.trim() }
-                if (isIng) ingOut.addAll(body) else stepOut.addAll(body)
+                if (kind == 'i') ingOut.addAll(body) else stepOut.addAll(body)
             }
         }
         return if (ingOut.isEmpty() && stepOut.isEmpty()) null else ingOut to stepOut

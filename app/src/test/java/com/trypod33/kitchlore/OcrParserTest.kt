@@ -102,4 +102,105 @@ class OcrParserTest {
         assertFalse("steps leaked: $ingText", ingText.contains("Bake for"))
         assertTrue("bake step missing: $stepText", stepText.contains("Bake for 25 minutes"))
     }
+    // Keith's Peachtree Street Chicken Salad card (Great American Recipes,
+    // Salads and Green Dishes Card 14): the recipe text sits in two columns
+    // on the right half of the card while the title and photo caption sit
+    // far left. The old split took the WIDEST start-edge gap, which is the
+    // gap between that far-left title/caption cluster and everything else,
+    // not the real ingredient/steps gutter, so both columns scrambled
+    // together into one ingredient list and the steps section came out
+    // empty. The split now scores candidate gaps and keeps the one that
+    // leaves two substantial side-by-side columns.
+    @Test
+    fun chickenSaladCardReadsBothColumns() {
+        val boxes = listOf(
+            // Far-left title and photo caption
+            box("Peachtree Street", 55, 60, 560, 125),
+            box("Chicken Salad", 55, 130, 470, 195),
+            box("GREAT AMERICAN", 1000, 95, 1400, 135),
+            box("RECIPES", 1060, 150, 1330, 180),
+            box("Salads and", 1310, 70, 1660, 105),
+            box("Green Dishes Card 14", 1310, 110, 1930, 145),
+            box("Group", 1790, 75, 1905, 105),
+            box("2", 2140, 55, 2210, 140),
+            box("Preparation time: 10 min.", 1310, 230, 1790, 258),
+            box("Simmering time: 20 min.", 1310, 262, 1770, 290),
+            box("Microwave cooking:", 1970, 225, 2260, 252),
+            box("see other side", 2045, 258, 2260, 285),
+            // Ingredient column (x ~1245-1880)
+            box("For 4 servings you will need:", 1245, 365, 1830, 395),
+            box("3 chicken breasts", 1285, 405, 1650, 435),
+            box("\u00BD cup pecans", 1285, 440, 1560, 470),
+            box("2 medium peaches, ripe", 1285, 475, 1730, 505),
+            box("4 Tbsp. mayonnaise", 1285, 510, 1640, 540),
+            box("2 Tbsp. plain yogurt or sour cream", 1285, 545, 1880, 575),
+            box("2 tsp. lemon juice", 1285, 580, 1590, 610),
+            box("\u00BE tsp. salt", 1285, 615, 1490, 645),
+            box("\u00BC tsp. pepper", 1285, 650, 1520, 680),
+            box("1 tsp. brown sugar", 1285, 685, 1570, 715),
+            box("DELICIOUS", 1330, 880, 1810, 975),
+            box("Tips:", 1245, 1080, 1330, 1105),
+            box("Leftover chicken is often too dry", 1245, 1110, 1800, 1135),
+            box("and too chilled to make a good", 1245, 1140, 1770, 1165),
+            box("addition to a great chicken salad.", 1245, 1170, 1780, 1195),
+            box("A whole broiler-fryer can be sim-", 1245, 1200, 1780, 1225),
+            box("mered, covered, for about 30 min-", 1245, 1230, 1790, 1255),
+            box("utes in a small amount of water.", 1245, 1260, 1750, 1285),
+            box("Place breast down so it self-bastes.", 1245, 1290, 1795, 1315),
+            box("Tender chunks of chicken and diced, fragrant peaches are tossed with", 55, 1385, 1210, 1412),
+            box("pecans and a lemon-laced mayonnaise. A delicious summer luncheon.", 55, 1417, 1130, 1444),
+            // Steps column (x ~1900-2445)
+            box("Preparation:", 1900, 360, 2140, 390),
+            box("1 Place chicken in a saucepan,", 1900, 395, 2440, 425),
+            box("breast side down, in 1\u00BD inches of", 1900, 430, 2430, 458),
+            box("water. Cover.", 1900, 463, 2130, 491),
+            box("2 Simmer for 20 minutes until", 1900, 496, 2390, 524),
+            box("chicken is fork-tender. Cool.", 1900, 529, 2360, 557),
+            box("3 Cut into bite-size pieces.", 1900, 562, 2320, 590),
+            box("4 During this time, toast pecans at", 1900, 595, 2440, 623),
+            box("350\u00B0F for 10 minutes. Remove.", 1900, 628, 2330, 656),
+            box("Coarsely break up.", 1900, 661, 2190, 689),
+            box("5 Pare peaches, if desired. Cut into", 1900, 694, 2440, 722),
+            box("\u00BE-inch pieces.", 1900, 727, 2140, 755),
+            box("6 In a small bowl, combine the", 1900, 760, 2380, 788),
+            box("mayonnaise, yogurt or sour cream,", 1900, 793, 2445, 821),
+            box("lemon juice, salt, pepper and brown", 1900, 826, 2440, 854),
+            box("sugar.", 1900, 859, 2020, 887),
+            box("7 Toss gently with the chicken,", 1900, 892, 2410, 920),
+            box("pecans and peaches. Serve on a", 1900, 925, 2400, 953),
+            box("green leaf lettuce.", 1900, 958, 2190, 986),
+            box("Good served with:", 1900, 1230, 2260, 1258),
+            box("Honey buns or French buns and", 1900, 1263, 2390, 1291),
+            box("iced tea. No dessert is needed!", 1900, 1296, 2380, 1324),
+            box("\u00A9MCMXXVIII GREAT AMERICAN RECIPES\u00AE ALL RIGHTS RESERVED", 1390, 1405, 2320, 1432),
+        )
+        val text = boxes.joinToString("\n") { it.text }
+        val parsed = OcrParser.parse(
+            text,
+            blocks = listOf("Peachtree Street" to 65, "Chicken Salad" to 65, "DELICIOUS" to 95),
+            boxes = boxes,
+        )
+
+        val ingText = parsed.ingredients.joinToString(" | ") { it.rawText.ifBlank { it.name } }
+        val stepText = parsed.steps.joinToString(" | ") { it.instructionText }
+
+        assertTrue("title wrong: ${parsed.title}", parsed.title.contains("Peachtree"))
+        assertTrue("servings wrong: ${parsed.baseServings}", parsed.baseServings == 4)
+        assertTrue("chicken breasts missing: $ingText", ingText.contains("chicken breasts"))
+        assertTrue("pecans missing: $ingText", ingText.contains("pecans"))
+        assertTrue("brown sugar missing: $ingText", ingText.contains("brown sugar"))
+        assertTrue("lemon juice missing: $ingText", ingText.contains("lemon juice"))
+        assertFalse("steps leaked into ingredients: $ingText", ingText.contains("saucepan"))
+        assertFalse("steps leaked into ingredients: $ingText", ingText.contains("Simmer"))
+        assertFalse("steps leaked into ingredients: $ingText", ingText.contains("Coarsely"))
+        assertFalse("tips leaked into ingredients: $ingText", ingText.contains("Leftover chicken"))
+        assertFalse("caption leaked into ingredients: $ingText", ingText.contains("Tender chunks"))
+        assertFalse("served-with leaked into ingredients: $ingText", ingText.contains("Honey buns"))
+        assertTrue("step 1 missing: $stepText", stepText.contains("Place chicken in a saucepan"))
+        assertTrue("step 2 missing: $stepText", stepText.contains("Simmer for 20 minutes"))
+        assertTrue("step 4 missing: $stepText", stepText.contains("toast pecans"))
+        assertTrue("step 7 missing: $stepText", stepText.contains("Toss gently"))
+        assertFalse("served-with leaked into steps: $stepText", stepText.contains("Honey buns"))
+        assertFalse("tips leaked into steps: $stepText", stepText.contains("Leftover chicken"))
+    }
 }

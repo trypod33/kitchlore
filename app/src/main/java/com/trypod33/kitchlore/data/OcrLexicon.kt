@@ -667,13 +667,7 @@ private val BASE_WORDS = setOf(
     // Naive English variants widen the net without a dictionary download.
     private val WORDS: Set<String> = buildSet {
         addAll(BASE_WORDS)
-        BASE_WORDS.forEach { w ->
-            add(w + "s")
-            add(w + "es")
-            add(w + "ed")
-            add(w + "d")
-            add(w + "ing")
-        }
+        addAll(COMMON_WORDS)
     }
 
     private const val MIN_LEN = 4
@@ -718,7 +712,11 @@ private val BASE_WORDS = setOf(
         if (seg.length < MIN_LEN || seg.length > MAX_LEN) return null
         val lower = seg.lowercase()
         if (lower in WORDS) return null
-        val matches = candidates(lower).filter { it in WORDS }.distinct()
+        // A trailing-s swap is plural confusion, not an OCR garble: never
+        // "correct" breast->breasts or inches->pinches on that shape.
+        val matches = candidates(lower)
+            .filter { it in WORDS && it != lower.dropLast(1) && it != lower + "s" }
+            .distinct()
         if (matches.size != 1) return null
         val fixed = matches.single()
         // restore the original casing shape
