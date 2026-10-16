@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Ingredient
+import com.trypod33.kitchlore.data.local.entity.Recipe
 import com.trypod33.kitchlore.data.local.entity.Step
 import kotlinx.coroutines.delay
 
@@ -40,11 +41,18 @@ import kotlinx.coroutines.delay
 fun CookModeRoute(db: AppDatabase, recipeId: Long, onBack: () -> Unit) {
     val steps by db.stepDao().getStepsForRecipe(recipeId).collectAsState(initial = emptyList())
     val ingredients by db.ingredientDao().getIngredientsForRecipe(recipeId).collectAsState(initial = emptyList())
-    CookModeScreen(steps, ingredients, onBack)
+    var recipe by remember { mutableStateOf<Recipe?>(null) }
+    LaunchedEffect(recipeId) { recipe = db.recipeDao().getRecipeById(recipeId) }
+    // Cook mode scales with the servings saved on the detail page, same
+    // factor the ingredient list there shows.
+    val base = recipe?.baseServings ?: 1
+    val scaled = recipe?.scaledServings?.takeIf { it > 0 } ?: base
+    val factor = if (base > 0) scaled.toDouble() / base else 1.0
+    CookModeScreen(steps, ingredients, factor, onBack)
 }
 
 @Composable
-fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, onBack: () -> Unit) {
+fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, factor: Double, onBack: () -> Unit) {
     var idx by remember { mutableStateOf(0) }
     var secondsLeft by remember { mutableStateOf<Int?>(null) }
     var running by remember { mutableStateOf(false) }
@@ -92,17 +100,13 @@ fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, onBack: () 
                         Text(if (showIngredients) "hide" else "show", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
                     }
                     if (showIngredients) {
-                        ingredients.chunked(2).forEach { row ->
-                            Row(Modifier.fillMaxWidth()) {
-                                row.forEachIndexed { i, ing ->
-                                    Text(
-                                        ingredientLabel(ing.name, ing.amount, ing.unit, ing.rawText),
-                                        fontSize = 14.sp,
-                                        modifier = Modifier.weight(1f).padding(top = 4.dp, end = if (i == 0) 10.dp else 0.dp),
-                                    )
-                                }
-                                if (row.size == 1) Spacer(Modifier.weight(1f))
-                            }
+                        // One column; two across wrapped badly with long lines.
+                        ingredients.forEach { ing ->
+                            Text(
+                                ingredientLabel(ing.name, ing.amount, ing.unit, ing.rawText, factor),
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
                         }
                     }
                 }

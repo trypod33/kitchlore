@@ -8,6 +8,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -70,6 +72,7 @@ fun RecipeDetailRoute(db: AppDatabase, recipeId: Long, onBack: () -> Unit, onCoo
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun RecipeDetailScreen(
     recipe: Recipe?,
     db: AppDatabase,
@@ -210,11 +213,12 @@ fun RecipeDetailScreen(
                                 .padding(top = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(
-                                Modifier
-                                    .weight(1f)
-                                    .horizontalScroll(rememberScrollState()),
+                            // Pills wrap instead of scrolling so nothing
+                            // hides behind the Tags button and heart.
+                            FlowRow(
+                                Modifier.weight(1f),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 tags.forEach { TagPill(label = it) }
                             }
@@ -271,24 +275,17 @@ fun RecipeDetailScreen(
                         if (ingredients.isEmpty()) {
                             Text("No ingredients recorded.", style = MaterialTheme.typography.bodyMedium)
                         } else {
-                            // Up to two across, so the list stays compact at the top of the card
-                            ingredients.chunked(2).forEach { row ->
-                                Row(Modifier.fillMaxWidth()) {
-                                    row.forEachIndexed { i, ing ->
-                                        Box(Modifier.weight(1f).padding(top = 2.dp, bottom = 2.dp, end = if (i == 0) 8.dp else 0.dp)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Checkbox(
-                                                    checked = checked[ing.id] ?: false,
-                                                    onCheckedChange = { on -> checked[ing.id] = on },
-                                                )
-                                                Text(
-                                                    ingredientLabel(ing.name, ing.amount, ing.unit, ing.rawText, factor),
-                                                    fontSize = 15.sp,
-                                                )
-                                            }
-                                        }
-                                    }
-                                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                            // One column; two across wrapped badly with long lines.
+                            ingredients.forEach { ing ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Checkbox(
+                                        checked = checked[ing.id] ?: false,
+                                        onCheckedChange = { on -> checked[ing.id] = on },
+                                    )
+                                    Text(
+                                        ingredientLabel(ing.name, ing.amount, ing.unit, ing.rawText, factor),
+                                        fontSize = 15.sp,
+                                    )
                                 }
                             }
                         }
