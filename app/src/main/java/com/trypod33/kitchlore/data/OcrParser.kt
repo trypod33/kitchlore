@@ -43,6 +43,7 @@ object OcrParser {
         "ml", "l", "liter", "liters", "litre", "litres",
         "pint", "pints", "quart", "quarts", "quart", "stick", "sticks",
         "clove", "cloves", "can", "cans", "package", "packages",
+        "pkg", "pkt",
         "envelope", "envelopes", "pinch", "dash", "sprig", "sprigs",
         "slice", "slices", "sheet", "sheets", "strip", "strips",
         "small", "medium", "large", "bunch", "bunches", "head", "heads",
@@ -204,6 +205,7 @@ object OcrParser {
             .filter { it.isNotEmpty() }
             .map { OcrLexicon.fixLine(it) }
             .let { rejoinOrphanAmounts(it) }
+            .let { joinHyphenLines(it) }
         if (lines.isEmpty()) return ParsedRecipe("(untitled)")
 
         val servings =
@@ -246,7 +248,36 @@ object OcrParser {
         val ingredients = mutableListOf<ParsedIngredient>()
         val steps = mutableListOf<ParsedStep>()
 
+        // Layout-driven extraction: the section headers mark real spots on
+        // the page, and only the lines that physically sit between the
+        // Ingredients header and the next header are ingredients. Prose
+        // above the block, timing notes and footers below it never enter,
+        // and ingredients cannot leak into the steps.
+        val layout = if (boxes.isNotEmpty()) layoutSections(boxes) else null
+
         when {
+            layout != null && layout.first.isNotEmpty() -> {
+                val ingLines = rejoinOrphanAmounts(
+                    joinHyphenLines(layout.first.map { OcrLexicon.fixLine(it.trim()) })
+                )
+                ingLines.forEach { l ->
+                    if (isIngredientNoise(l)) return@forEach
+                    val prev = ingredients.lastOrNull()
+                    if (prev != null && isContinuation(l, prev)) {
+                        ingredients[ingredients.size - 1] = ParsedIngredient(
+                            name = (prev.name + " " + l).trim(),
+                            rawText = (prev.rawText + " " + l).trim(),
+                            amount = prev.amount,
+                            unit = prev.unit,
+                        )
+                    } else {
+                        ingredients.add(parseIngredientLine(l, rules))
+                    }
+                }
+                val stepLines = joinHyphenLines(layout.second.map { OcrLexicon.fixLine(it.trim()) })
+                    .filter { !isMeasurementLine(it) || looksLikeStep(it) || hasStepVerb(it) }
+                steps.addAll(parseSteps(stepLines))
+            }
             ingIdx >= 0 -> {
                 // Strict window: only the lines between the Ingredients
                 // header and the next section header are ingredients.
@@ -663,7 +694,7 @@ object OcrParser {
 
     private fun looksLikeStep(line: String): Boolean {
         val lower = line.lowercase()
-        return (NUM_PREFIX_RE.containsMatchIn(line) && line.length > 12) ||
+        return (NUM_PREFIX_RE.containsMatchIn(line) && hasStepVerb(line)) ||
             (BULLET_PREFIX_RE.containsMatchIn(line) && line.length > 20) ||
             ACTION_VERBS.any { lower.startsWith(it) }
     }
@@ -714,6 +745,11 @@ object OcrParser {
         val prevOpen = prev != null && !SENTENCE_END_RE.containsMatchIn(prev.instructionText.trimEnd())
         val startsNew = hasNum || prev == null ||
             (words[0].firstOrNull()?.isUpperCase() == true && (!prevOpen || verbStart(text)))
+        // Description prose ("creamy, delicious, and quick to prepare as
+        // well.") that the layout sweep or a closed step leaves orphaned is
+        // a sentence, never an instruction; a line joining an open step is
+        // that step's continuation and stays.
+        if (isStepProse(text) && (prev == null || !prevOpen || startsNew)) return
         if (!startsNew && prev != null) {
             out[out.size - 1] = ParsedStep(
                 (prev.instructionText + " " + text).trim(),
@@ -748,6 +784,88 @@ object OcrParser {
         }
         if (cur.isNotBlank()) out.add(cur.trim())
         return if (out.size > 1) out else listOf(text)
+    }
+
+    // A descriptive sentence, not an instruction: no action verb anywhere
+    // ("creamy, delicious, and quick to prepare as well.") and no amount.
+    private fun isStepProse(text: String): Boolean {
+        if (verbStart(text)) return false
+        if (hasStepVerb(text)) return false
+        if (LEADING_QTY_RE.containsMatchIn(text) || LEADING_QTY_ALT_RE.containsMatchIn(text)) return false
+        return text.split(Regex("\\s+")).size >= 3
+    }
+
+    // OCR wraps a line mid-word and keeps the trailing hyphen ("Combine
+    // cream cheese, half-" / "and-half, cherry juice blend..."). The pair
+    // joins so the line reads whole: the hyphen stays, a lowercase follow
+    // joins with no space, and a section header never gets welded on.
+    private fun joinHyphenLines(lines: List<String>): List<String> {
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            val l = lines[i]
+            val next = lines.getOrNull(i + 1)
+            if (l.endsWith("-") && next != null && next.length <= 120 &&
+                !isIngHeader(next) && !isStepHeader(next) &&
+                next.firstOrNull()?.isUpperCase() != true
+            ) {
+                out.add((l + next).take(300))
+                i += 2
+            } else {
+                out.add(l)
+                i++
+            }
+        }
+        return out
+    }
+
+    // Keith's layout plan: use the recognizer's line boxes to find the real
+    // Ingredients / Instructions blocks. The page is split into columns the
+    // same way columnOrdered does, each column is read top to bottom, and a
+    // section's lines are exactly the ones between its header and the next
+    // header in the same column. Returns null when no section headers are
+    // found, and the caller falls back to the text-sequence parser.
+    private fun layoutSections(boxes: List<OcrLineBox>): Pair<List<String>, List<String>>? {
+        val usable = boxes.filter { it.text.isNotBlank() && it.right > it.left && it.bottom > it.top }
+        if (usable.size < 6) return null
+        val centers = usable.map { (it.left + it.right) / 2.0 }.sorted()
+        var bestIdx = -1
+        var bestGap = 0.0
+        for (i in 0 until centers.size - 1) {
+            val gap = centers[i + 1] - centers[i]
+            if (gap > bestGap) {
+                bestGap = gap
+                bestIdx = i
+            }
+        }
+        val span = (usable.maxOf { it.right } - usable.minOf { it.left }).toDouble()
+        val split = if (span > 0 && bestGap >= span * 0.25 && bestIdx >= 0)
+            (centers[bestIdx] + centers[bestIdx + 1]) / 2.0 else null
+        val columns: List<List<OcrLineBox>> = if (split == null) {
+            listOf(usable.sortedBy { it.top })
+        } else {
+            val l = usable.filter { (it.left + it.right) / 2.0 <= split }.sortedBy { it.top }
+            val r = usable.filter { (it.left + it.right) / 2.0 > split }.sortedBy { it.top }
+            if (l.size < 3 || r.size < 3) listOf(usable.sortedBy { it.top }) else listOf(l, r)
+        }
+        val ingOut = mutableListOf<String>()
+        val stepOut = mutableListOf<String>()
+        for (col in columns) {
+            val headers = col.mapIndexedNotNull { i, b ->
+                when {
+                    isIngHeader(b.text) -> i to true
+                    isStepHeader(b.text) -> i to false
+                    else -> null
+                }
+            }
+            if (headers.isEmpty()) continue
+            for ((pos, isIng) in headers) {
+                val stop = headers.firstOrNull { it.first > pos }?.first ?: col.size
+                val body = col.subList(pos + 1, stop).map { it.text.trim() }
+                if (isIng) ingOut.addAll(body) else stepOut.addAll(body)
+            }
+        }
+        return if (ingOut.isEmpty() && stepOut.isEmpty()) null else ingOut to stepOut
     }
 
     private fun parseSteps(lines: List<String>): List<ParsedStep> {
