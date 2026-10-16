@@ -681,9 +681,11 @@ private val BASE_WORDS = setOf(
 
     /** Corrects single-word OCR garbles inside a line; hyphenated parts are handled piece by piece. */
     fun fixLine(line: String): String {
-        if (line.length < MIN_LEN) return line
-        val parts = line.split(" ")
-        if (parts.none { needsFix(it) }) return line
+        val s = if (line.contains("0z") || line.contains("0Z"))
+            Regex("\\b0[zZ]\\b").replace(line, "oz") else line
+        if (s.length < MIN_LEN) return s
+        val parts = s.split(" ")
+        if (parts.none { needsFix(it) }) return s
         return parts.joinToString(" ") { fixWord(it) }
     }
 

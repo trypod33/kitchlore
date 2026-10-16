@@ -718,11 +718,13 @@ object OcrParser {
     private val SENTENCE_END_RE = Regex("[.!?]$")
 
     private fun verbStart(text: String): Boolean {
-        val lower = text.lowercase()
-        if (ACTION_VERBS.any { lower.startsWith(it) }) return true
+        // The first word has to BE the verb: "cream the butter" is an
+        // action, "creamy, delicious..." merely starts with the same letters.
+        val first = (text.split(Regex("\\s+")).firstOrNull() ?: return false)
+            .trim(',', '.', '!', '?', ':', ';').lowercase()
+        if (ACTION_VERBS.any { first == it }) return true
         // OCR often glues one junk character onto the first word ("BBake",
         // "Bwhip"); the word minus its first letter still names the action.
-        val first = lower.split(Regex("\\s+")).firstOrNull() ?: return false
         val trimmed = first.drop(1)
         return trimmed.length >= 3 && ACTION_VERBS.any { trimmed.startsWith(it) }
     }
@@ -749,7 +751,14 @@ object OcrParser {
         // well.") that the layout sweep or a closed step leaves orphaned is
         // a sentence, never an instruction; a line joining an open step is
         // that step's continuation and stays.
-        if (isStepProse(text) && (prev == null || !prevOpen || startsNew)) return
+        val leadWord = text.split(Regex("\\s+")).first()
+            .trim(',', '.', '!', '?', ':', ';').lowercase()
+        val fragmentStart = leadWord in setOf(
+            "and", "or", "until", "for", "with", "to", "then", "before",
+            "after", "about", "into", "over", "but", "at", "in", "on",
+            "remaining", "optional", "reserved", "divided",
+        )
+        if (isStepProse(text) && !(prevOpen && fragmentStart)) return
         if (!startsNew && prev != null) {
             out[out.size - 1] = ParsedStep(
                 (prev.instructionText + " " + text).trim(),
