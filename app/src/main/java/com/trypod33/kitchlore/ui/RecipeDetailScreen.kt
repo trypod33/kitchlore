@@ -200,6 +200,25 @@ fun RecipeDetailScreen(
                                     Text(line, fontSize = 14.sp)
                                 }
                             }
+                        }
+                        // Tags and heart sit under the title so it gets every
+                        // pixel between the picture and the screen edge.
+                        val tags = tagsCsvState.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(
+                                Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                tags.forEach { TagPill(label = it) }
+                            }
+                            TextButton(onClick = { editingTags = true }) { Text("Tags", fontSize = 14.sp) }
                             TextButton(
                                 onClick = {
                                     val next = !(recipe?.favorite ?: false)
@@ -207,19 +226,6 @@ fun RecipeDetailScreen(
                                     scope.launch { db.recipeDao().setFavorite(recipeId, next) }
                                 },
                             ) { Text(if (favorited) "\u2665" else "\u2661", fontSize = 26.sp) }
-                            TextButton(onClick = { editingTags = true }) { Text("Tags", fontSize = 14.sp) }
-                        }
-                        val tags = tagsCsvState.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                        if (tags.isNotEmpty()) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 10.dp)
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                tags.forEach { TagPill(label = it) }
-                            }
                         }
                         r.notes?.takeIf { it.isNotBlank() }?.let {
                             Text(it, fontSize = 15.sp, modifier = Modifier.padding(top = 10.dp))
