@@ -39,8 +39,8 @@ android {
         applicationId = "com.trypod33.kitchlore"
         minSdk = 26
         targetSdk = 34
-        versionCode = 43
-        versionName = "0.5.10"
+        versionCode = 44
+        versionName = "0.5.11"
         buildConfigField("String", "MODEL_URL", "\"${prop("modelUrl", "https://huggingface.co/litert-community/SmolLM2-360M-Instruct/resolve/main/SmolLM2_360M_instruct.litertlm")}\"")
     }
 
@@ -128,6 +128,9 @@ dependencies {
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.1")
 
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    // CamScanner-style document scanning: edge detect, crop, perspective
+    // straighten and clean the page before OCR. Google Play services, no key.
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

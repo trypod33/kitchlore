@@ -1,10 +1,12 @@
 package com.trypod33.kitchlore.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.view.ScaleGestureDetector
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
@@ -46,6 +48,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import androidx.exifinterface.media.ExifInterface
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -135,6 +140,51 @@ fun ScanRoute(
         }
     }
 
+    // Play-services document scanner: finds the card edges, straightens and
+    // cleans the page, then hands back the image this screen already knows
+    // how to read. This is the path that reads recipe cards well.
+    val docScan = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val scan = result.data?.let { GmsDocumentScanningResult.fromActivityResultIntent(it) }
+        val uris = scan?.pages?.mapNotNull { it.imageUri }.orEmpty()
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        busy = true
+        fun next(i: Int) {
+            if (i >= uris.size) {
+                busy = false
+                return
+            }
+            runOcr(context, uris[i], rules) { p, path ->
+                stage(p, path)
+                next(i + 1)
+            }
+        }
+        next(0)
+    }
+    fun launchDocScan() {
+        val activity = context as? Activity
+        if (activity == null) {
+            error = "Document scanning isn't available here"
+            return
+        }
+        val options = GmsDocumentScannerOptions.Builder()
+            .setGalleryImportAllowed(true)
+            .setPageLimit(3)
+            .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+            .build()
+        busy = true
+        GmsDocumentScanning.getClient(options)
+            .getStartScanIntent(activity)
+            .addOnSuccessListener { sender ->
+                busy = false
+                docScan.launch(IntentSenderRequest.Builder(sender).build())
+            }
+            .addOnFailureListener {
+                busy = false
+                error = "Document scanning isn't available on this phone; use the photo buttons instead"
+            }
+    }
+
     val p = parsed
     if (p != null) {
         ReviewImportScreen(
@@ -173,6 +223,23 @@ fun ScanRoute(
             mode == "photo" -> {
                 LaunchedEffect(Unit) {
                     pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }
+                if (staged.isEmpty() && parsed == null && !busy) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Button(
+                            onClick = { launchDocScan() },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                        ) { Text("Scan document (auto-crop)") }
+                        OutlinedButton(
+                            onClick = {
+                                pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(56.dp),
+                        ) { Text("Pick a photo") }
+                    }
                 }
             }
             !granted -> {
@@ -240,6 +307,13 @@ fun ScanRoute(
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
+                Button(
+                    onClick = {
+                        error = null
+                        launchDocScan()
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp).height(56.dp),
+                ) { Text("Scan document (auto-crop)") }
                 Button(
                     onClick = {
                         busy = true
