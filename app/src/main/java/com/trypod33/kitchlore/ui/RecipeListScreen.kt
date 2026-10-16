@@ -8,6 +8,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -57,7 +59,9 @@ import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecovera
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Recipe
 import com.trypod33.kitchlore.sync.DriveSyncManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** A small round tag, tappable when onTap is given. */
 @Composable
@@ -254,6 +258,7 @@ fun RecipeListScreen(
     var selectedIng by remember { mutableStateOf<Set<String>>(emptySet()) }
     var ingIndex by remember { mutableStateOf<Map<Long, List<String>>>(emptyMap()) }
     var showAddIng by remember { mutableStateOf(false) }
+    var tagEditing by remember { mutableStateOf<Recipe?>(null) }
     var newIng by remember { mutableStateOf("") }
     val recipes by db.recipeDao().getAllRecipes().collectAsState(initial = emptyList())
 
@@ -418,7 +423,7 @@ fun RecipeListScreen(
                     }
                 } else {
                     items(filtered, key = { it.id }) { recipe ->
-                        RecipeResultRow(recipe = recipe, onOpen = onOpen)
+                        RecipeResultRow(recipe = recipe, onOpen = onOpen, onLongPress = { tagEditing = recipe })
                     }
                 }
             } else {
@@ -527,11 +532,28 @@ fun RecipeListScreen(
                     }
                 } else {
                     items(filtered, key = { it.id }) { recipe ->
-                        RecipeResultRow(recipe = recipe, onOpen = onOpen)
+                        RecipeResultRow(recipe = recipe, onOpen = onOpen, onLongPress = { tagEditing = recipe })
                     }
                 }
             }
         }
+    }
+
+    tagEditing?.let { target ->
+        TagEditorDialog(
+            initialTags = target.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+            onDismiss = { tagEditing = null },
+            onSave = { list ->
+                tagEditing = null
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        db.recipeDao().update(
+                            target.copy(tagsCsv = list.joinToString(", "), dateModified = System.currentTimeMillis())
+                        )
+                    }
+                }
+            },
+        )
     }
 
     if (showAddIng) {
@@ -561,7 +583,12 @@ fun RecipeListScreen(
 
 /** One library recipe row, shared by the search results and the All recipes list. */
 @Composable
-private fun RecipeResultRow(recipe: com.trypod33.kitchlore.data.local.entity.Recipe, onOpen: (Long) -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun RecipeResultRow(
+    recipe: com.trypod33.kitchlore.data.local.entity.Recipe,
+    onOpen: (Long) -> Unit,
+    onLongPress: (() -> Unit)? = null,
+) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -576,10 +603,14 @@ private fun RecipeResultRow(recipe: com.trypod33.kitchlore.data.local.entity.Rec
                 scaleX = scale
                 scaleY = scale
             }
-            .clickable(interactionSource = interaction, indication = null) { onOpen(recipe.id) },
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onLongClick = onLongPress,
+            ) { onOpen(recipe.id) },
         shape = RoundedCornerShape(18.dp),
     ) {
-        Row(Modifier.height(92.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.height(104.dp), verticalAlignment = Alignment.CenterVertically) {
             RecipeThumbnail(
                 recipe.originalImagePath,
                 Modifier
@@ -587,7 +618,10 @@ private fun RecipeResultRow(recipe: com.trypod33.kitchlore.data.local.entity.Rec
                     .width(92.dp)
                     .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp)),
             )
-            Column(Modifier.padding(12.dp)) {
+            Column(
+                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
                 Text(
                     recipe.title,
                     fontSize = 18.sp,

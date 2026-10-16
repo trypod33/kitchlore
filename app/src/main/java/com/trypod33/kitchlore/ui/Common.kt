@@ -3,9 +3,21 @@ package com.trypod33.kitchlore.ui
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.trypod33.kitchlore.data.local.entity.Ingredient
 import com.trypod33.kitchlore.data.local.entity.Recipe
 import kotlinx.coroutines.Dispatchers
@@ -189,4 +202,96 @@ fun ingredientLabel(name: String, amount: Double?, unit: String?, rawText: Strin
     val qty = formatFractional(scaleAmount(a, factor))
     val unitPart = unit?.trim() ?: ""
     return listOf(qty, unitPart, name.trim()).filter { it.isNotBlank() }.joinToString(" ").ifBlank { rawText }
+}
+
+private val QUICK_TAGS = listOf(
+    "Main", "Chicken", "Beef", "Pork", "Fish", "Seafood", "Vegetarian",
+    "Dessert", "Breakfast", "Soup", "Salad", "Side", "Appetizer", "Pasta",
+    "Bread", "Italian", "Mexican", "Low salt",
+)
+
+// Quick tag editor: lives right on the list card (long-press) and the
+// recipe page (Tags button), so tagging never requires the full edit screen.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun TagEditorDialog(
+    initialTags: List<String>,
+    onDismiss: () -> Unit,
+    onSave: (List<String>) -> Unit,
+) {
+    var tags by remember { mutableStateOf(initialTags) }
+    var input by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Tags") },
+        text = {
+            Column {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (tags.isEmpty()) {
+                        Text("No tags yet. Add one below.", fontSize = 14.sp)
+                    }
+                    tags.forEach { t ->
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(start = 12.dp),
+                            ) {
+                                Text(t, fontSize = 13.sp)
+                                Text(
+                                    "  \u2715",
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .clickable { tags = tags.filterNot { it.equals(t, ignoreCase = true) } }
+                                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 12.dp),
+                ) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        label = { Text("New tag") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        val v = input.trim()
+                        if (v.isNotEmpty() && tags.none { it.equals(v, ignoreCase = true) }) {
+                            tags = tags + v
+                            input = ""
+                        }
+                    }) { Text("Add") }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.padding(top = 10.dp),
+                ) {
+                    QUICK_TAGS.forEach { t ->
+                        val active = tags.any { it.equals(t, ignoreCase = true) }
+                        FilledTonalButton(
+                            onClick = {
+                                tags = if (active) tags.filterNot { it.equals(t, ignoreCase = true) } else tags + t
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp),
+                        ) { Text(if (active) "$t \u2713" else t, fontSize = 13.sp, maxLines = 1) }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(tags) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

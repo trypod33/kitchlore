@@ -151,7 +151,19 @@ object FirstRunImport {
                         val rid = db.recipeDao().insert(recipe)
                         if (tIngWhere != null) {
                             val ings = readIngredients(sql, tIngWhere, oldId, rid, tIngName, tIngRaw, tIngAmount, tIngUnit, tIngOrder)
-                            if (ings.isNotEmpty()) db.ingredientDao().insertAll(ings)
+                            if (ings.isNotEmpty()) {
+                                db.ingredientDao().insertAll(ings)
+                                if (recipe.tagsCsv.isBlank()) {
+                                    db.recipeDao().update(
+                                        recipe.copy(
+                                            id = rid,
+                                            tagsCsv = RecipeTagger
+                                                .autoTags(recipe.title, ings.map { it.rawText.ifBlank { it.name } })
+                                                .joinToString(", "),
+                                        )
+                                    )
+                                }
+                            }
                         }
                         if (tStepWhere != null) {
                             val steps = readSteps(sql, tStepWhere, oldId, rid, tStepNum, tStepText, tStepTimer)

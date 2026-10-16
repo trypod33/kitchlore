@@ -372,7 +372,10 @@ suspend fun insertWebRecipe(db: AppDatabase, context: Context, parsed: ParsedWeb
                 sourceType = "web",
                 sourceNote = host,
                 originalImagePath = photoPath,
-                tagsCsv = "Imported",
+                // Auto-tag from title + ingredients; the source stays in
+                // sourceType/sourceNote, where it belongs.
+                tagsCsv = RecipeTagger.autoTags(parsed.title?.takeIf { it.isNotBlank() } ?: host, parsed.ingredients)
+                    .joinToString(", "),
             )
             val rid = db.recipeDao().insert(recipe)
             val ings = parsed.ingredients.mapIndexed { i, line ->

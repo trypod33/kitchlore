@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trypod33.kitchlore.data.AmountFixer
 import com.trypod33.kitchlore.data.OcrParser
+import com.trypod33.kitchlore.data.RecipeTagger
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.CorrectionRule
 import com.trypod33.kitchlore.data.local.entity.Ingredient
@@ -234,7 +235,18 @@ private suspend fun saveRecipe(
         id = if (isNew) 0L else recipeId,
         title = title.ifBlank { "(untitled)" },
         baseServings = base,
-        tagsCsv = tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.joinToString(", "),
+        tagsCsv = run {
+            val joined = tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.joinToString(", ")
+            if (isNew && joined.isBlank()) {
+                // Auto-tag a brand-new recipe from its title and ingredient
+                // lines; anything the user typed wins, and their fixes stick
+                // because edits never re-run this.
+                RecipeTagger.autoTags(
+                    title.ifBlank { "(untitled)" },
+                    ingDrafts.map { listOf(it.amount, it.unit, it.name).filter { t -> t.isNotBlank() }.joinToString(" ") },
+                ).joinToString(", ")
+            } else joined
+        },
         sourceType = existing?.sourceType ?: "manual",
         sourceNote = existing?.sourceNote,
         originalImagePath = photoPath,

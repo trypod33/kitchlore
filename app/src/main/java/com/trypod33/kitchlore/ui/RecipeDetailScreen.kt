@@ -108,6 +108,10 @@ fun RecipeDetailScreen(
     // The 3x5 card: photo covers the whole face with a little "tap" in the
     var favorited by remember(recipe?.favorite) { mutableStateOf(recipe?.favorite == true) }
     // corner, and tapping flips it over, medium fast, into the recipe page.
+    var editingTags by remember { mutableStateOf(false) }
+    // Tags hold in their own state so an edit here shows instantly without
+    // re-reading the whole recipe row.
+    var tagsCsvState by remember(recipe?.id) { mutableStateOf(recipe?.tagsCsv ?: "") }
     val rotation = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         // nothing to preload; rotation starts at 0
@@ -203,8 +207,9 @@ fun RecipeDetailScreen(
                                     scope.launch { db.recipeDao().setFavorite(recipeId, next) }
                                 },
                             ) { Text(if (favorited) "\u2665" else "\u2661", fontSize = 26.sp) }
+                            TextButton(onClick = { editingTags = true }) { Text("Tags", fontSize = 14.sp) }
                         }
-                        val tags = r.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                        val tags = tagsCsvState.split(",").map { it.trim() }.filter { it.isNotEmpty() }
                         if (tags.isNotEmpty()) {
                             Row(
                                 Modifier
@@ -311,6 +316,25 @@ fun RecipeDetailScreen(
                     }) { Text("Delete") }
                 },
                 dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+            )
+        }
+        if (editingTags && recipe != null) {
+            val target = recipe
+            TagEditorDialog(
+                initialTags = tagsCsvState.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+                onDismiss = { editingTags = false },
+                onSave = { list ->
+                    editingTags = false
+                    val joined = list.joinToString(", ")
+                    tagsCsvState = joined
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            db.recipeDao().update(
+                                target.copy(tagsCsv = joined, dateModified = System.currentTimeMillis())
+                            )
+                        }
+                    }
+                },
             )
         }
     }
