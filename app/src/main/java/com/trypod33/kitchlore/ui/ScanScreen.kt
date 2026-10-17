@@ -55,8 +55,12 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.trypod33.kitchlore.data.OcrParser
-import com.trypod33.kitchlore.data.RecipeLlm
+import com.trypod33.kitchlore.data.RegionBlock
+import com.trypod33.kitchlore.data.RegionKind
+import com.trypod33.kitchlore.data.RegionLabeler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import com.trypod33.kitchlore.data.RecipeLlm
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.trypod33.kitchlore.data.ParsedRecipe
@@ -406,13 +410,36 @@ private fun runOcr(
                     OcrParser.OcrLineBox(line.text, b.left, b.top, b.right, b.bottom)
                 }
             }
-            val parsedRecipe = OcrParser.parse(visionText.text, blocks, rules, boxes)
-            val path = when (image) {
-                is File -> image.absolutePath
-                is Uri -> copyUriToPhotos(context, image)
-                else -> null
+            val regionBlocks = visionText.textBlocks.mapNotNull { block ->
+                val box = block.boundingBox ?: return@mapNotNull null
+                RegionBlock(block.text, box.left, box.top, box.right, box.bottom)
+            }.sortedWith(compareBy({ it.top }, { it.left }))
+            CoroutineScope(Dispatchers.Main.immediate).launch {
+                val labels = try {
+                    RegionLabeler.label(context, regionBlocks) { }
+                } catch (t: Throwable) {
+                    null
+                }
+                val regions = labels?.let { ls ->
+                    val title = StringBuilder()
+                    val ing = StringBuilder()
+                    val steps = StringBuilder()
+                    for ((b, k) in regionBlocks.zip(ls)) when (k) {
+                        RegionKind.TITLE -> title.append(b.text).append('\n')
+                        RegionKind.INGREDIENTS -> ing.append(b.text).append('\n')
+                        RegionKind.STEPS -> steps.append(b.text).append('\n')
+                        RegionKind.OTHER -> {}
+                    }
+                    OcrParser.Regions(title.toString(), ing.toString(), steps.toString())
+                }
+                val parsedRecipe = OcrParser.parse(visionText.text, blocks, rules, boxes, regions = regions)
+                val path = when (image) {
+                    is File -> image.absolutePath
+                    is Uri -> copyUriToPhotos(context, image)
+                    else -> null
+                }
+                onDone(parsedRecipe, path)
             }
-            onDone(parsedRecipe, path)
         }
         .addOnFailureListener {
             onDone(OcrParser.parse("", emptyList(), rules), null)

@@ -560,6 +560,8 @@ private val BASE_WORDS = setOf(
 "spices",
 "wedges", "boiling", "studded",
         "spinach",
+        "grease",
+        "chewy",
 "splash",
 "split",
 "spoon",

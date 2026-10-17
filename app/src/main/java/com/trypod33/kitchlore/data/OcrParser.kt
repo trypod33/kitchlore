@@ -159,7 +159,7 @@ object OcrParser {
         RegexOption.IGNORE_CASE,
     )
 
-    private val NUM_PREFIX_RE = Regex("^\\s*(?:step\\s*)?(\\d{1,2})(?:[.)\\]])?(?=\\s|$)", RegexOption.IGNORE_CASE)
+    private val NUM_PREFIX_RE = Regex("^\\s*(?:step\\s*)?(\\d{1,2})(?:[.)\\]:])?(?=\\s|$)", RegexOption.IGNORE_CASE)
     private val BULLET_PREFIX_RE = Regex("^\\s*[•*\\-–]\\s+")
     private val TIMER_RE = Regex(
         "(\\d+)\\s*(?:to\\s*\\d+\\s*)?(min(?:ute)?s?|hours?|hrs?|seconds?|secs?)\\b",
@@ -168,6 +168,17 @@ object OcrParser {
 
     // One recognized line with its pixel box on the page, so side-by-side
     // layouts can be read back in true column order.
+    /**
+     * Stage 1 hand-off: the region labeler (or the review screen's saved
+     * labels) says which text belongs where. The rules still parse every
+     * line; this only fixes the region split.
+     */
+    data class Regions(
+        val title: String = "",
+        val ingredients: String = "",
+        val steps: String = "",
+    )
+
     data class OcrLineBox(
         val text: String,
         val left: Int,
@@ -243,6 +254,7 @@ object OcrParser {
         blocks: List<Pair<String, Int>> = emptyList(),
         rules: Map<String, String> = emptyMap(),
         boxes: List<OcrLineBox> = emptyList(),
+        regions: Regions? = null,
     ): ParsedRecipe {
         // A two-column card read straight off the page interleaves the
         // columns, which bleeds steps into the ingredient list and
@@ -259,7 +271,7 @@ object OcrParser {
             .map { OcrLexicon.fixLine(it) }
             .let { rejoinOrphanAmounts(it) }
             .let { joinHyphenLines(it) }
-        if (lines.isEmpty()) return ParsedRecipe("(untitled)")
+        if (lines.isEmpty() && regions == null) return ParsedRecipe("(untitled)")
 
         val servings =
             SERVINGS_RE.find(text)?.groupValues?.get(1)?.toIntOrNull()
@@ -270,7 +282,10 @@ object OcrParser {
         val cook = parseTimeLine(text, COOK_RE)
             ?: parseTimeLine(text, Regex("(?:bake|cook|chill)\\s*:\\s*(\\d+)\\s*(min(?:ute)?s?|hours?|hrs?|h)\\b", RegexOption.IGNORE_CASE))
 
-        var title: String? = null
+        var title: String? = regions?.title
+            ?.split("\n")
+            ?.map { OcrLexicon.fixLine(it.trim()) }
+            ?.firstOrNull { it.isNotBlank() }
         // The title is the tallest text at the TOP of the card: with line
         // boxes, take the tallest line in the top fifth of the page and
         // relax the all-caps card-art rule for it (real cookbook titles are
@@ -335,12 +350,27 @@ object OcrParser {
         // Ingredients header and the next header are ingredients. Prose
         // above the block, timing notes and footers below it never enter,
         // and ingredients cannot leak into the steps.
-        val layout = if (boxes.isNotEmpty()) layoutSections(boxes) else null
+        val regionLines = regions
+            ?.let { r ->
+                val ing = r.ingredients.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+                val stp = r.steps.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+                if (ing.isNotEmpty() && stp.isNotEmpty()) ing to stp else null
+            }
+        val layoutFromRegions = regionLines != null
+        val layout = when {
+            layoutFromRegions -> regionLines
+            boxes.isNotEmpty() -> layoutSections(boxes)
+            else -> null
+        }
 
         when {
             layout != null && layout.first.isNotEmpty() -> {
                 val ingLines = rejoinOrphanAmounts(
-                    joinHyphenLines(layout.first.map { OcrLexicon.fixLine(it.trim()) })
+                    joinHyphenLines(
+                        layout.first
+                            .map { OcrLexicon.fixLine(it.trim()) }
+                            .flatMap { if (layoutFromRegions) splitIngredientBlob(it) else listOf(it) },
+                    )
                 )
                 ingLines.forEach { l ->
                     if (isIngredientNoise(l)) return@forEach
@@ -391,7 +421,7 @@ object OcrParser {
                         prevOpen = !SENTENCE_END_RE.containsMatchIn(l.trimEnd())
                     }
                 }
-                steps.addAll(parseSteps(stepLines))
+                steps.addAll(parseSteps(stepLines, trustRegion = layoutFromRegions))
             }
             ingIdx >= 0 -> {
                 // Strict window: only the lines between the Ingredients
@@ -437,10 +467,11 @@ object OcrParser {
                     }
                 }
                 steps.addAll(parseSteps(stepLines))
-                if (stepIdx < 0) {
+                if (stepIdx < 0 && !layoutFromRegions) {
                     // The ingredient block ended at the first step-shaped
                     // line; the measurement shape signal is the backstop for
-                    // whatever still slipped in.
+                    // whatever still slipped in. A labeled region is trusted:
+                    // the model or Keith put those lines there.
                     ingredients.removeAll { ing -> !isMeasurementLine(ing.rawText.ifBlank { ing.name }) }
                 }
             }
@@ -923,15 +954,67 @@ object OcrParser {
     // A numbered step marker carries its punctuation ("1." / "Step 2:");
     // "1 teaspoon whole cloves" is a quantity, not step one.
     private val STEP_NUM_RE = Regex(
-        "^\\s*(?:step\\s*)?\\d{1,2}\\s*[.)\\]](?=\\s|$)",
+        "^\\s*(?:step\\s*)?\\d{1,2}\\s*[.)\\]:](?=\\s|$)",
         RegexOption.IGNORE_CASE,
     )
     // Nutrition footers arrive measurement-shaped ("9 mg sodium, 40 g
     // carbo.", "Daily Values: 0% vit. A, 4% vit. C") but are never
     // ingredients (Keith's hot-spiced-cider card).
-    private val NUTRITION_RE = Regex(
+    val NUTRITION_RE = Regex(
         "(?i)\\b(?:nutrition facts|daily values|mg sodium|g carbo|g fiber|g pro\\.|cal\\.|chol\\.|total fat|vit\\.\\s*[a-z])",
     )
+    // Appliance booklets pack the whole ingredient list into one semicolon
+    // paragraph; no-header book pages fuse it into running prose. Both split
+    // at amount boundaries, so nothing is invented: every word the segments
+    // carry is one the recognizer saw. Region mode only; plain card layouts
+    // never reach this.
+    private val AMOUNT_ANY_RE = Regex(
+        "(?i)\\b(\\d+[\\s\\d/.\\u2044-]{0,6})\\s*(cups?|tablespoons?|tbsp|tbs|teaspoons?|tsp|lbs?|pounds?|ounces?|oz|cloves?|sticks?|quarts?|pints?|packages?|envelopes?|cans?|slices?|pinch|dash)\\b",
+    )
+    private val COMMA_DIGIT_RE = Regex(",\\s*(?:and\\s+)?(?=\\d)")
+
+    private fun splitIngredientBlob(line: String): List<String> {
+        if (line.count { it == ';' } >= 2) {
+            val parts = line.split(';').map { it.trim() }.filter { it.isNotEmpty() }
+            if (parts.size >= 3 &&
+                parts.count { LEADING_QTY_RE.containsMatchIn(it) || AMOUNT_ANY_RE.containsMatchIn(it) } >=
+                    parts.size - 1
+            ) {
+                return parts
+            }
+        }
+        return splitProseIngredients(line)
+    }
+
+    private fun splitProseIngredients(line: String): List<String> {
+        val starts = AMOUNT_ANY_RE.findAll(line).map { it.range.first }.toMutableSet()
+        COMMA_DIGIT_RE.findAll(line).forEach { m ->
+            val pos = m.range.last + 1
+            // A comma boundary a character or two from a real amount start is
+            // the same boundary ("sliced thin, 3 tablespoons").
+            if (starts.none { Math.abs(it - pos) <= 2 }) starts.add(pos)
+        }
+        val bounds = starts.filter { it > 0 }.sorted()
+        if (bounds.size < 3) return listOf(line)
+        val segs = mutableListOf<String>()
+        for (j in bounds.indices) {
+            val end = if (j + 1 < bounds.size) bounds[j + 1] else line.length
+            var seg = line.substring(bounds[j], end).trim()
+            if (j == bounds.size - 1) {
+                // Trailing prose after the last amount ("...vegetable oil.
+                // Have everything sliced and measured...") is not an ingredient.
+                val cut = Regex("\\.\\s+[A-Z]").find(seg)?.range?.first
+                if (cut != null && cut > 8) seg = seg.substring(0, cut).trim()
+            }
+            seg = seg.replace(Regex("^(?:and\\s+)+", RegexOption.IGNORE_CASE), "")
+                .trimEnd(',', ';', ' ')
+            if (seg.length >= 3) segs += seg
+        }
+        val ok = segs.size >= 3 &&
+            segs.all { LEADING_QTY_RE.containsMatchIn(it) || AMOUNT_ANY_RE.containsMatchIn(it) }
+        return if (ok) segs else listOf(line)
+    }
+
     private val DANGLING_WORDS = setOf(
         "the", "a", "an", "of", "and", "or", "with", "for", "to", "in", "on",
         "at", "by", "from", "into", "onto", "until", "about", "over", "before",
@@ -955,7 +1038,12 @@ object OcrParser {
     // or the previous step is still open (no sentence-ending punctuation); a
     // capitalized verb line starts a fresh step. Nothing is invented: only
     // lines the recognizer actually saw are stitched back together.
-    private fun appendToSteps(out: MutableList<ParsedStep>, raw: String, forceJoin: Boolean = false) {
+    private fun appendToSteps(
+        out: MutableList<ParsedStep>,
+        raw: String,
+        forceJoin: Boolean = false,
+        trustRegion: Boolean = false,
+    ) {
         val l = raw.trim()
         if (l.isEmpty() || isNoise(l)) return
         // A duration-led line ("10 minutes. Meanwhile...") is a wrapped
@@ -998,7 +1086,9 @@ object OcrParser {
         // cup."). Prose after prose ("creamy, delicious...") still drops.
         val prevRealInstruction = prev != null &&
             (hasStepVerb(prev.instructionText) || verbStart(prev.instructionText))
-        if (isStepProse(text) && !forceJoin && !(prevOpen && (fragmentStart || prevRealInstruction))) return
+        if (isStepProse(text) && !forceJoin && !trustRegion &&
+            !(prevOpen && (fragmentStart || prevRealInstruction))
+        ) return
         if (!startsNew && prev != null) {
             out[out.size - 1] = ParsedStep(
                 (prev.instructionText + " " + text).trim(),
@@ -1104,12 +1194,12 @@ object OcrParser {
         return if (ingOut.isEmpty() && stepOut.isEmpty()) null else ingOut to stepOut
     }
 
-    private fun parseSteps(lines: List<String>): List<ParsedStep> {
+    private fun parseSteps(lines: List<String>, trustRegion: Boolean = false): List<ParsedStep> {
         val out = mutableListOf<ParsedStep>()
         for (raw in lines) {
             Regex("(?=(?:^|\\s)(?:step\\s*)?\\d{1,2}[.):]\\s+)", RegexOption.IGNORE_CASE)
                 .split(raw)
-                .forEach { appendToSteps(out, it) }
+                .forEach { appendToSteps(out, it, trustRegion = trustRegion) }
         }
         return out
     }

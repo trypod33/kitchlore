@@ -217,6 +217,28 @@ object RecipeLlm {
      * output is guarded: anything that does not read as a sane ingredient line
      * is ignored and the deterministic parse stands.
      */
+    /**
+     * One prompt in, one reply out, on the shared engine. Used by the region
+     * labeler (stage 1) as well; the caller guards the reply's shape.
+     */
+    suspend fun classify(system: String, prompt: String): String? = withContext(Dispatchers.IO) {
+        val e = engine ?: return@withContext null
+        try {
+            val convo = e.createConversation(
+                ConversationConfig(
+                    systemInstruction = Contents.of(system),
+                    samplerConfig = SamplerConfig(topK = 40, topP = 0.9, temperature = 0.1),
+                ),
+            )
+            val sb = StringBuilder()
+            convo.sendMessageAsync(prompt).collect { sb.append(it.toString()) }
+            val out = sb.toString().trim()
+            if (out.isBlank() || out.length > 4000) null else out
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
     private suspend fun cleanLine(line: String): String? = withContext(Dispatchers.IO) {
         val e = engine ?: return@withContext null
         try {

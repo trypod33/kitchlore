@@ -3,6 +3,10 @@ package com.trypod33.kitchlore
 import com.trypod33.kitchlore.data.OcrLexicon
 import com.trypod33.kitchlore.data.OcrParser
 import com.trypod33.kitchlore.data.OcrParser.OcrLineBox
+import com.trypod33.kitchlore.data.RegionBlock
+import com.trypod33.kitchlore.data.RegionKind
+import com.trypod33.kitchlore.data.RegionLabeler
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -432,5 +436,219 @@ class OcrParserTest {
         assertFalse("no edges: $stepText", stepText.contains("orange edges"))
         assertFalse("no margin fragments in steps: $stepText", stepText.contains("vder"))
         assertTrue("servings 8: ${parsed.baseServings}", parsed.baseServings == 8)
+    }
+    @Test
+    fun regionModeParsesCookbookCard() {
+        val regions = OcrParser.Regions(
+            title = "GERMAN CHOCOLATE CAKE",
+            ingredients = "1 1/2 cups all-purpose flour\n3/4 teaspoon baking soda\n" +
+                "1/2 teaspoon salt\n4 (1-ounce) squares German sweet chocolate\n" +
+                "1/2 cup boiling water\n1 cup butter, softened\n2 cups sugar\n" +
+                "4 eggs, separated\n1 teaspoon vanilla extract\n1 cup buttermilk",
+            steps = "1. Grease and lightly flour two 8x1 1/2-inch round pans.\n" +
+                "2. Melt chocolate in the boiling water. Cool.\n" +
+                "3. Cream butter and sugar until light and fluffy. Beat in egg yolks and vanilla.\n" +
+                "4. Bake at 350 degrees for 30 minutes. Cool and frost.",
+        )
+        val text = "GERMAN CHOCOLATE CAKE\nMakes 12 servings\n" + regions.ingredients + "\n" + regions.steps
+        val parsed = OcrParser.parse(text, emptyList(), emptyMap(), emptyList(), regions = regions)
+        assertEquals("GERMAN CHOCOLATE CAKE", parsed.title)
+        assertEquals(10, parsed.ingredients.size)
+        println("STEP: " + parsed.steps.joinToString(" | ") { it.instructionText })
+        assertEquals(
+            "steps: " + parsed.steps.joinToString(" | ") { it.instructionText },
+            4,
+            parsed.steps.size,
+        )
+        assertTrue(
+            "baking soda line: " + parsed.ingredients.joinToString { it.name },
+            parsed.ingredients.any { it.name.contains("baking soda") },
+        )
+        assertTrue(
+            "steps must not leak into ingredients: " + parsed.ingredients.joinToString { it.name },
+            parsed.ingredients.none { it.name.contains("Bake") },
+        )
+        assertEquals(12, parsed.baseServings)
+    }
+
+
+    // ---- the six-layout test set: cue labels feed regions, the rules parse ----
+
+    private fun regionsFrom(blocks: List<RegionBlock>): OcrParser.Regions {
+        val labels = RegionLabeler.resolveLabels(blocks, RegionLabeler.cueLabels(blocks), null)
+        val title = blocks[labels.indexOfFirst { it == RegionKind.TITLE }].text
+        val ing = blocks.withIndex()
+            .filter { labels[it.index] == RegionKind.INGREDIENTS }
+            .joinToString("\n") { it.value.text }
+        val stp = blocks.withIndex()
+            .filter { labels[it.index] == RegionKind.STEPS }
+            .joinToString("\n") { it.value.text }
+        return OcrParser.Regions(title, ing, stp)
+    }
+
+    private fun parseLayout(blocks: List<RegionBlock>) =
+        OcrParser.parse(blocks.joinToString("\n") { it.text }, emptyList(), emptyMap(), emptyList(), regions = regionsFrom(blocks))
+
+    @Test
+    fun hybridReadsTheCard() {
+        val blocks = listOf(
+            RegionBlock("Fluffy Buttermilk Pancakes", 62, 55, 730, 100),
+            RegionBlock("Ingredients", 62, 138, 242, 168),
+            RegionBlock(
+                "2 cups all-purpose flour\n2 tablespoons sugar\n2 teaspoons baking powder\n" +
+                    "1/2 teaspoon baking soda\n1/2 teaspoon salt\n2 cups buttermilk\n" +
+                    "2 large eggs\n1/4 cup melted butter",
+                62, 185, 420, 462,
+            ),
+            RegionBlock("Directions", 62, 492, 220, 518),
+            RegionBlock("1. Whisk the flour, sugar, baking powder, baking soda, and salt in a large bowl.", 62, 538, 660, 592),
+            RegionBlock("2. In a separate bowl, beat the buttermilk, eggs, and melted butter.", 62, 610, 660, 664),
+            RegionBlock("3. Pour the wet ingredients into the dry and stir until just combined; lumps are fine.", 62, 682, 660, 736),
+            RegionBlock("4. Heat a griddle over medium heat and grease lightly.", 62, 754, 660, 808),
+            RegionBlock("5. Pour 1/4 cup batter per pancake; flip when bubbles form, about 2 minutes per side.", 62, 826, 660, 880),
+        )
+        val parsed = parseLayout(blocks)
+        assertEquals("Fluffy Buttermilk Pancakes", parsed.title)
+        assertEquals(8, parsed.ingredients.size)
+        assertTrue(parsed.ingredients.any { it.name.contains("baking soda") })
+        assertTrue(parsed.ingredients.any { it.name.contains("melted butter") })
+        assertEquals(5, parsed.steps.size)
+        assertTrue(parsed.steps[0].instructionText.startsWith("Whisk"))
+    }
+
+    @Test
+    fun hybridReadsTheTwoColumnCookbook() {
+        val blocks = listOf(
+            RegionBlock("Weeknight Chicken Stir-Fry", 62, 45, 715, 95),
+            RegionBlock("[ photo ]", 400, 180, 570, 220),
+            RegionBlock("INGREDIENTS", 62, 330, 228, 355),
+            RegionBlock(
+                "1 1/2 lbs chicken breast, sliced thin\n3 tablespoons soy sauce\n" +
+                    "2 tablespoons cornstarch\n1/4 cup chicken broth\n2 tablespoons oyster sauce\n" +
+                    "1 tablespoon sesame oil\n3 cloves garlic, minced\n1 tablespoon fresh ginger, grated\n" +
+                    "2 cups broccoli florets\n1 red bell pepper, sliced\n2 tablespoons vegetable oil",
+                62, 365, 340, 748,
+            ),
+            RegionBlock("METHOD", 400, 330, 535, 355),
+            RegionBlock(
+                "1. Toss the chicken with 1 tablespoon soy sauce and the cornstarch; rest 10 minutes.\n" +
+                    "2. Stir the broth, oyster sauce, remaining soy sauce, and sesame oil in a small bowl.\n" +
+                    "3. Heat 1 tablespoon vegetable oil in a wok over high heat; sear chicken 4 minutes. Remove.\n" +
+                    "4. Add remaining oil; stir-fry garlic, ginger, broccoli, and bell pepper 3 minutes.\n" +
+                    "5. Return chicken to the wok; pour in sauce and toss until thickened, about 2 minutes.\n" +
+                    "6. Serve over rice.",
+                400, 365, 940, 700,
+            ),
+        )
+        val parsed = parseLayout(blocks)
+        assertEquals("Weeknight Chicken Stir-Fry", parsed.title)
+        assertEquals(11, parsed.ingredients.size)
+        assertTrue(parsed.ingredients.any { it.name.contains("chicken breast") })
+        assertEquals(6, parsed.steps.size)
+        assertTrue(parsed.steps[0].instructionText.startsWith("Toss"))
+        assertTrue(parsed.steps.last().instructionText.contains("rice"))
+    }
+
+    @Test
+    fun hybridReadsTheApplianceBooklet() {
+        val blocks = listOf(
+            RegionBlock("CHEWY CHOCOLATE CHIP COOKIES", 60, 40, 560, 72),
+            RegionBlock("Model ABC-123 Cookie Program | Makes about 36 cookies", 60, 85, 480, 102),
+            RegionBlock("YOU WILL NEED:", 60, 120, 210, 138),
+            RegionBlock(
+                "2 1/4 cups all-purpose flour; 1 teaspoon baking soda; 1 teaspoon salt; " +
+                    "1 cup butter, softened; 3/4 cup granulated sugar; 3/4 cup brown sugar; " +
+                    "2 large eggs; 2 teaspoons vanilla extract; 2 cups chocolate chips.",
+                60, 150, 745, 240,
+            ),
+            RegionBlock("Step 1: Preheat oven to 375\u00b0F. Line baking sheets with parchment.", 60, 262, 570, 305),
+            RegionBlock("CAUTION: Baking sheets will be hot. Always use oven mitts when handling.", 60, 345, 730, 388),
+            RegionBlock("Step 2: Whisk flour, baking soda, and salt in a bowl.", 60, 398, 540, 416),
+            RegionBlock("Step 3: Beat butter and both sugars until fluffy, about 3 minutes.", 60, 425, 640, 466),
+            RegionBlock("Step 4: Beat in eggs one at a time, then vanilla.", 60, 480, 500, 498),
+            RegionBlock("NOTE: Do not overmix once flour is added, or cookies will be tough.", 60, 505, 690, 543),
+            RegionBlock("Step 5: Fold in the dry ingredients until just combined, then the chocolate chips.", 60, 552, 690, 595),
+            RegionBlock("Step 6: Scoop 2-tablespoon balls onto sheets, 2 inches apart.", 60, 600, 655, 618),
+            RegionBlock("Step 7: Bake 9 to 11 minutes until edges are golden. Cool on the sheet 5 minutes.", 60, 640, 700, 682),
+        )
+        val parsed = parseLayout(blocks)
+        assertTrue("title: " + parsed.title, parsed.title.equals("CHEWY CHOCOLATE CHIP COOKIES", ignoreCase = true))
+        assertEquals(9, parsed.ingredients.size)
+        assertTrue(parsed.ingredients.any { it.name.contains("granulated sugar") })
+        assertTrue(parsed.ingredients.any { it.name.contains("chocolate chips") })
+        assertEquals(7, parsed.steps.size)
+        assertTrue(parsed.steps[0].instructionText.contains("Preheat"))
+        assertTrue(parsed.steps.last().instructionText.contains("Bake"))
+    }
+
+    @Test
+    fun hybridReadsTheMagazine() {
+        val blocks = listOf(
+            RegionBlock("Fluffy Buttermilk Pancakes", 70, 55, 925, 105),
+            RegionBlock(
+                "The secret is resting the batter, ten quiet minutes gives you the " +
+                    "fluffiest stack of your life. A slow Sunday morning, made better.",
+                70, 115, 850, 170,
+            ),
+            RegionBlock("What you'll need", 88, 205, 300, 228),
+            RegionBlock(
+                "2 cups all-purpose flour\n2 tablespoons sugar\n2 teaspoons baking powder\n" +
+                    "1/2 teaspoon baking soda\n1/2 teaspoon salt\n2 cups buttermilk\n" +
+                    "2 large eggs\n1/4 cup melted butter",
+                88, 240, 340, 478,
+            ),
+            RegionBlock("1", 432, 215, 468, 268),
+            RegionBlock("Whisk the flour, sugar, baking powder, baking soda, and salt in a large bowl.", 485, 222, 890, 272),
+            RegionBlock("2", 432, 288, 468, 340),
+            RegionBlock("In a separate bowl, beat the buttermilk, eggs, and melted butter.", 485, 295, 855, 342),
+            RegionBlock("3", 432, 360, 468, 412),
+            RegionBlock("Pour the wet ingredients into the dry and stir until just combined; lumps are fine.", 485, 367, 895, 415),
+            RegionBlock("4", 432, 428, 468, 480),
+            RegionBlock("Heat a griddle over medium heat and grease lightly.", 485, 435, 820, 480),
+            RegionBlock("5", 432, 498, 468, 550),
+            RegionBlock("Pour 1/4 cup batter per pancake; flip when bubbles form, about 2 minutes per side.", 485, 505, 880, 575),
+            RegionBlock(
+                "TIP: Keep finished pancakes warm in a 200\u00b0F oven while you work through the " +
+                    "batter. Never press them with the spatula, you'll squeeze out the fluff.",
+                88, 805, 900, 872,
+            ),
+        )
+        val parsed = parseLayout(blocks)
+        assertEquals("Fluffy Buttermilk Pancakes", parsed.title)
+        assertEquals(8, parsed.ingredients.size)
+        assertEquals(5, parsed.steps.size)
+        assertTrue(parsed.steps[0].instructionText.startsWith("Whisk"))
+    }
+
+    @Test
+    fun hybridReadsTheNoHeaderBook() {
+        val prose =
+            "For the stir-fry, begin with 1 1/2 lbs chicken breast, sliced thin, " +
+                "3 tablespoons soy sauce, 2 tablespoons cornstarch, 1/4 cup chicken broth, " +
+                "2 tablespoons oyster sauce, 1 tablespoon sesame oil, 3 cloves garlic, minced, " +
+                "1 tablespoon fresh ginger, grated, 2 cups broccoli florets, 1 red bell pepper, " +
+                "sliced, and 2 tablespoons vegetable oil. Have everything sliced and measured " +
+                "before the wok gets hot, because once you start there is no pausing."
+        val blocks = listOf(
+            RegionBlock("Weeknight Chicken Stir-Fry", 60, 50, 585, 88),
+            RegionBlock(prose, 60, 105, 720, 335),
+            RegionBlock("Toss the chicken with 1 tablespoon soy sauce and the cornstarch; rest 10 minutes.", 60, 350, 620, 400),
+            RegionBlock("Stir the broth, oyster sauce, remaining soy sauce, and sesame oil in a small bowl.", 60, 415, 700, 465),
+            RegionBlock("Heat 1 tablespoon vegetable oil in a wok over high heat; sear chicken 4 minutes. Remove.", 60, 480, 705, 530),
+            RegionBlock("Add remaining oil; stir-fry garlic, ginger, broccoli, and bell pepper 3 minutes.", 60, 545, 635, 592),
+            RegionBlock("Return chicken to the wok; pour in sauce and toss until thickened, about 2 minutes.", 60, 605, 680, 655),
+            RegionBlock("Serve over rice.", 60, 668, 215, 688),
+        )
+        val parsed = parseLayout(blocks)
+        assertEquals("Weeknight Chicken Stir-Fry", parsed.title)
+        assertEquals(
+            "ingredients: " + parsed.ingredients.joinToString(" | ") { it.rawText.ifBlank { it.name } },
+            11,
+            parsed.ingredients.size,
+        )
+        assertTrue(parsed.ingredients.any { it.name.contains("broccoli") })
+        assertTrue(parsed.ingredients.any { it.name.contains("bell pepper") })
+        assertEquals(6, parsed.steps.size)
+        assertTrue(parsed.steps[0].instructionText.startsWith("Toss"))
     }
 }
