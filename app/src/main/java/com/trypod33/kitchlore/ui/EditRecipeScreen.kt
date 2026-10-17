@@ -132,7 +132,6 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                         onValueChange = { v -> ingDrafts = ingDrafts.toMutableList().also { it[i] = d.copy(name = v) } },
                         label = { Text("Name") },
                         modifier = Modifier.weight(1.6f),
-                        singleLine = true,
                     )
                     OutlinedTextField(
                         value = d.amount,

@@ -1,5 +1,6 @@
 package com.trypod33.kitchlore
 
+import com.trypod33.kitchlore.data.OcrLexicon
 import com.trypod33.kitchlore.data.OcrParser
 import com.trypod33.kitchlore.data.OcrParser.OcrLineBox
 import org.junit.Assert.assertFalse
@@ -274,5 +275,52 @@ class OcrParserTest {
         assertTrue("step 2 tail missing: $stepText", stepText.contains("Arrange mushrooms"))
         assertTrue("step 2 tail missing: $stepText", stepText.contains("Bake in a 425"))
         assertFalse("tips in steps: $stepText", stepText.contains("PREP:"))
+    }
+
+    // Keith's mulled-cider card: the scanner read the fraction glyphs as
+    // "Y4" and "Y2", so "1/4 to 1/2 cup packed brown sugar" arrived garbled.
+    @Test
+    fun yFractionGarblesSnapToFractions() {
+        val parsed = OcrParser.parseIngredientLine("Y4 to Y2 cup packed brown sugar")
+        assertTrue("amount wrong: ${parsed.amount}", parsed.amount == 0.25)
+        assertTrue("unit wrong: ${parsed.unit}", parsed.unit == "cup")
+        assertTrue("name wrong: ${parsed.name}", parsed.name == "packed brown sugar")
+        val half = OcrParser.parseIngredientLine("Y2 cup white vinegar")
+        assertTrue("half wrong: ${half.amount}", half.amount == 0.5)
+        val eighth = OcrParser.parseIngredientLine("Y8 tsp ground cinnamon")
+        assertTrue("eighth wrong: ${eighth.amount}", eighth.amount == 0.125)
+    }
+
+    // A digit read where a letter belongs ("teasp0on") used to skip the
+    // lexicon because tokens with digits were never repaired.
+    @Test
+    fun digitGarbleInUnitWordIsFixed() {
+        val line = OcrLexicon.fixLine("1 teasp0on whole cloves")
+        assertTrue("line wrong: $line", line == "1 teaspoon whole cloves")
+        val units = OcrParser.parseIngredientLine(line)
+        assertTrue("unit wrong: ${units.unit}", units.unit == "teaspoon")
+        assertTrue("amount wrong: ${units.amount}", units.amount == 1.0)
+    }
+
+    // The cider card's directions wrapped onto a line reading
+    // "photo, page 83). Add bag to" which rode into the ingredient list
+    // ahead of the first step-shaped line.
+    @Test
+    fun proseTailInsideIngredientWindowIsDropped() {
+        val text = """
+            MULLED CIDER
+            Ingredients:
+            8 cups apple cider
+            1 teaspoon whole allspice
+            photo, page 83). Add bag to
+            1. Combine all ingredients in a saucepan
+        """.trimIndent()
+        val parsed = OcrParser.parse(text)
+        val ingText = parsed.ingredients.joinToString(" | ") { it.rawText.ifBlank { it.name } }
+        val stepText = parsed.steps.joinToString(" | ") { it.instructionText }
+        assertFalse("prose tail leaked into ingredients: $ingText", ingText.contains("photo, page"))
+        assertFalse("prose tail leaked into ingredients: $ingText", ingText.contains("Add bag"))
+        assertTrue("cider missing: $ingText", ingText.contains("apple cider"))
+        assertTrue("step missing: $stepText", stepText.contains("Combine"))
     }
 }

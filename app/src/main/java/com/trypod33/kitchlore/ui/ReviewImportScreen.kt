@@ -202,7 +202,6 @@ fun ReviewImportScreen(
                     onValueChange = { v ->
                         ingredients = ingredients.toMutableList().also { it[i] = v }
                     },
-                    singleLine = true,
                     modifier = Modifier.weight(1f).padding(vertical = 4.dp),
                 )
                 if (!selecting) {

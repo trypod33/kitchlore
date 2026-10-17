@@ -679,8 +679,33 @@ private val BASE_WORDS = setOf(
             Regex("\\b0[zZ]\\b").replace(line, "oz") else line
         if (s.length < MIN_LEN) return s
         val parts = s.split(" ")
-        if (parts.none { needsFix(it) }) return s
-        return parts.joinToString(" ") { fixWord(it) }
+        if (parts.none { needsFix(it) || digitWordFix(it) != null }) return s
+        return parts.joinToString(" ") { tok ->
+            if (needsFix(tok)) fixWord(tok) else digitWordFix(tok) ?: tok
+        }
+    }
+
+    // Digits read where letters belong ("teasp0on" for teaspoon): translate
+    // the common glyph confusions and accept only an exact lexicon word, so
+    // real amounts ("8", "2 1/2") and "0z" are never touched.
+    private fun digitWordFix(tok: String): String? {
+        val bare = tok.trim('.', ',', '!', '?', ':', ';')
+        if (bare.length < MIN_LEN || bare.length > MAX_LEN) return null
+        if (!bare.any { it.isDigit() } || !bare.any { it.isLetter() }) return null
+        if (bare.contains('-') || bare.contains('/')) return null
+        val translated = bare.map { c ->
+            when (c) {
+                '0' -> 'o'
+                '1' -> 'l'
+                '5' -> 's'
+                '8' -> 'g'
+                else -> c
+            }
+        }.joinToString("")
+        val lower = translated.lowercase()
+        if (lower !in WORDS) return null
+        val punct = tok.substring(bare.length)
+        return (if (tok.first().isUpperCase()) lower.replaceFirstChar { it.uppercaseChar() } else lower) + punct
     }
 
     private fun needsFix(tok: String): Boolean {

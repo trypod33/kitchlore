@@ -14,6 +14,9 @@ object AmountFixer {
     // "%" and "%%" garbles, with or without a whole-number part ("1%", "1%%").
     private val PERCENT_GARBLE_RE = Regex("^\\d*%+\\d*$")
     private val VEE_RE = Regex("^v[s2348a]$", RegexOption.IGNORE_CASE)
+    // The same glyphs read as a Y on some cards ("Y4 to Y2 cup packed brown
+    // sugar" on Keith's mulled-cider card): snap them the same way.
+    private val WHY_RE = Regex("^y[s2348a]$", RegexOption.IGNORE_CASE)
     private val H_UNIT_RE = Regex(
         "^h(cups?|tbsps?|tsps?|tablespoons?|teaspoons?)$",
         RegexOption.IGNORE_CASE,
@@ -21,8 +24,8 @@ object AmountFixer {
 
     fun isGarbleAmount(tok: String): Boolean {
         val b = tok.trimEnd('.', ',').lowercase()
-        return PERCENT_GARBLE_RE.matches(b) || VEE_RE.matches(b) || b == "h" ||
-            H_UNIT_RE.matches(b)
+        return PERCENT_GARBLE_RE.matches(b) || VEE_RE.matches(b) || WHY_RE.matches(b) ||
+            b == "h" || H_UNIT_RE.matches(b)
     }
 
     // Ingredients the recipe cards in the wild usually measure as 1/3 cup,
@@ -45,6 +48,13 @@ object AmountFixer {
                 key == "vs" -> "1/3$punct"
                 key == "v2" -> "1/2$punct"
                 VEE_RE.matches(key) -> when (key.drop(1)) {
+                    "3", "s" -> "1/3$punct"
+                    "2" -> "1/2$punct"
+                    "4", "a" -> "1/4$punct"
+                    "8" -> "1/8$punct"
+                    else -> tok
+                }
+                WHY_RE.matches(key) -> when (key.drop(1)) {
                     "3", "s" -> "1/3$punct"
                     "2" -> "1/2$punct"
                     "4", "a" -> "1/4$punct"

@@ -155,7 +155,7 @@ object OcrParser {
     // A line that starts with an amount the scanner garbled: "h cup broth",
     // "V2 cup sugar", "Vs tsp salt", "1% cups flour", "3/4 cup milk".
     private val GARBLED_QTY_LINE_RE = Regex(
-        "^\\s*(?:[hvV]\\s*\\d?\\s*)?(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|qts?|qts\\.|oz|ounces?|lbs?|pounds?|cloves?|slices?)\\b|^(?:Vs|V\\d)\\b|^\\d+\\s*[/%%]\\s*\\d?|^[hV]\\b",
+        "^\\s*(?:[hvVy]\\s*\\d?\\s*)?(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|qts?|qts\\.|oz|ounces?|lbs?|pounds?|cloves?|slices?)\\b|^(?:Vs|V\\d|[Yy]\\d)\\b|^\\d+\\s*[/%%]\\s*\\d?|^[hVy]\\b",
         RegexOption.IGNORE_CASE,
     )
 
@@ -524,6 +524,13 @@ object OcrParser {
                         idx += 2
                     }
                 }
+                // "1/4 to 1/2 cup": a range keeps the first amount, and both
+                // ends drop out of the name instead of riding in as text.
+                if (idx + 1 < tokens.size && tokens[idx].equals("to", ignoreCase = true) &&
+                    parseAmount(tokens[idx + 1]) != null
+                ) {
+                    idx += 2
+                }
             }
         }
         val unitCand: (Int) -> String? = { i ->
@@ -721,6 +728,13 @@ object OcrParser {
     // Rules that only apply to ingredient lines: steps can run long and can
     // legitimately contain temperatures ("Bake at 350°F for 30 minutes").
     private fun isIngredientNoise(line: String): Boolean {
+        // A lowercase line carrying a mid-sentence ")." is a wrapped tail of
+        // an instruction ("photo, page 83). Add bag to cider"), never an
+        // ingredient, however the window around the Ingredients header read.
+        val t0 = line.trim()
+        if (t0.isNotEmpty() && t0[0].isLowerCase() &&
+            Regex("\\)\\.\\s").containsMatchIn(t0)
+        ) return true
         if (isNoise(line)) return true
         // Tips/notes prose: ingredient lines never run past ~12 words.
         if (line.split(Regex("\\s+")).size > 12) return true
