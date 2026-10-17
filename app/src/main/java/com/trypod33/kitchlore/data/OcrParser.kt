@@ -288,9 +288,9 @@ object OcrParser {
                     val c = OcrLexicon.fixLine(b.text.trim())
                     c.length in 3..90 && !c.contains("serves", ignoreCase = true) &&
                         !LEADING_QTY_RE.containsMatchIn(c) && !LEADING_QTY_ALT_RE.containsMatchIn(c) &&
-                        !c.trimEnd().endsWith(":")
+                        !c.trimEnd().endsWith(":") && !NUTRITION_RE.containsMatchIn(c)
                 }
-            if (tall != null && (tall.bottom - tall.top) >= medianH * 3 / 2) {
+            if (tall != null && (tall.bottom - tall.top) >= medianH * 5 / 4) {
                 title = OcrLexicon.fixLine(tall.text.trim())
             }
         }
@@ -364,7 +364,28 @@ object OcrParser {
                 val stepJoined = joinHyphenLines(layout.second.map { OcrLexicon.fixLine(it.trim()) })
                 val stepLines = mutableListOf<String>()
                 var prevOpen = false
+                var sawNumbered = false
                 for (l in stepJoined) {
+                    if (NUTRITION_RE.containsMatchIn(l)) continue
+                    if (STEP_NUM_RE.containsMatchIn(l)) {
+                        sawNumbered = true
+                        stepLines.add(l)
+                        prevOpen = false
+                        continue
+                    }
+                    if (sawNumbered) {
+                        // Once the card numbers its steps, every line in the
+                        // directions region belongs to the current step until
+                        // the next number: an amount-led line here is step
+                        // prose ("1 teaspoon whole cloves on a double-thick,
+                        // 6-inch-"), never an ingredient the header missed.
+                        if (stepLines.isNotEmpty()) {
+                            stepLines[stepLines.size - 1] = (stepLines.last() + " " + l).trim()
+                        } else {
+                            stepLines.add(l)
+                        }
+                        continue
+                    }
                     if (!isMeasurementLine(l) || looksLikeStep(l) || hasStepVerb(l) || prevOpen) {
                         stepLines.add(l)
                         prevOpen = !SENTENCE_END_RE.containsMatchIn(l.trimEnd())
@@ -425,25 +446,37 @@ object OcrParser {
             }
             else -> {
                 var lastWasStep = false
+                var sawNumberedStep = false
                 lines.forEachIndexed { i, l ->
                     if (i < startIdx || i == titleLineIdx || isNoise(l)) return@forEachIndexed
                     when {
+                        // Once the card numbers its steps, an unnumbered
+                        // line that follows is that step's own continuation
+                        // ("Serve cider in mugs..." mid step 2 of the
+                        // hot-spiced-cider card), never a fresh verb-led
+                        // step. Checked before isIngredientNoise: the prose
+                        // rules would otherwise drop the servings line.
+                        sawNumberedStep &&
+                            steps.isNotEmpty() &&
+                            isStepTail(l, steps.last().instructionText, numberedMode = true) -> {
+                            appendToSteps(steps, l, forceJoin = true)
+                        }
                         looksLikeStep(l) -> {
                             appendToSteps(steps, l)
                             lastWasStep = true
+                            if (NUM_PREFIX_RE.containsMatchIn(l)) sawNumberedStep = true
                         }
-                        // A lowercase tail with no amount straight after an
-                        // open step is that step's continuation, not an
-                        // ingredient. Checked BEFORE isIngredientNoise: the
-                        // prose rules otherwise eat wrapped step tails
-                        // ("reserve caps. Chop enough stems to make 1 cup.").
+                        // A line continuing the previous step (a lowercase
+                        // tail, a measurement-shaped line after an open
+                        // step, prose left hanging on a function word) is
+                        // that step's continuation, not an ingredient.
+                        // Checked BEFORE isIngredientNoise: the prose rules
+                        // otherwise eat wrapped step tails ("reserve caps.
+                        // Chop enough stems to make 1 cup.").
                         lastWasStep &&
                             steps.isNotEmpty() &&
-                            l.trim().firstOrNull()?.isUpperCase() != true &&
-                            !LEADING_QTY_RE.containsMatchIn(l.trim()) &&
-                            !LEADING_QTY_ALT_RE.containsMatchIn(l.trim()) &&
-                            !SENTENCE_END_RE.containsMatchIn(steps.last().instructionText.trimEnd()) -> {
-                            appendToSteps(steps, l)
+                            isStepTail(l, steps.last().instructionText, numberedMode = false) -> {
+                            appendToSteps(steps, l, forceJoin = true)
                             lastWasStep = true
                         }
                         isIngredientNoise(l) -> {}
@@ -500,7 +533,7 @@ object OcrParser {
             when {
                 bare.equals("Vs", true) -> listOf("1/3")
                 bare.equals("V2", true) -> listOf("1/2")
-                bare == "|" -> listOf("1")
+                bare == "|" || bare == "I" || bare == "l" -> listOf("1")
                 hun != null -> listOf("1/2", hun.groupValues[1])
                 else -> listOf(tok)
             }
@@ -706,6 +739,10 @@ object OcrParser {
         if (GARBLED_QTY_LINE_RE.containsMatchIn(t)) return false
         val tokens = t.split(Regex("\\s+"))
         if (tokens.size > 3) return false
+        // A one-token line the lexicon doesn't know ("vder,", "stir") is a
+        // torn page-margin fragment, never the tail of the ingredient
+        // above it.
+        if (tokens.size == 1 && !OcrLexicon.isKnownWord(tokens[0])) return false
         // A line that talks ("mixture is soft, creamy and") is never the
         // tail of the ingredient above it.
         if (Regex("\\b(?:is|are|should|make|makes|will|can)\\b", RegexOption.IGNORE_CASE)
@@ -728,6 +765,9 @@ object OcrParser {
     // Rules that only apply to ingredient lines: steps can run long and can
     // legitimately contain temperatures ("Bake at 350°F for 30 minutes").
     private fun isIngredientNoise(line: String): Boolean {
+        // Nutrition footers are measurement-shaped but never ingredients
+        // ("9 mg sodium, 40 g carbo." / "Daily Values: 0% vit. A").
+        if (NUTRITION_RE.containsMatchIn(line)) return true
         // A lowercase line carrying a mid-sentence ")." is a wrapped tail of
         // an instruction ("photo, page 83). Add bag to cider"), never an
         // ingredient, however the window around the Ingredients header read.
@@ -806,13 +846,54 @@ object OcrParser {
 
     private fun looksLikeStep(line: String): Boolean {
         val lower = line.lowercase()
+        // A bare one-word verb ("stir" from a page margin) is a fragment,
+        // never a step; real steps carry at least two words.
+        if (line.trim().split(Regex("\\s+")).size < 2) return false
         return (NUM_PREFIX_RE.containsMatchIn(line) && hasStepVerb(line)) ||
             (BULLET_PREFIX_RE.containsMatchIn(line) && line.length > 20) ||
             ACTION_VERBS.any { lower.startsWith(it) }
     }
 
+    // Is this line the previous step's own continuation rather than a new
+    // step or an ingredient? After a step that ends mid-clause ("...tie
+    // with a clean string (see") anything un-numbered continues it; after a
+    // closed step, a lowercase non-amount tail does, or a non-measurement
+    // line left hanging on a function word ("For spice bag, place
+    // cinnamon, allspice, and the"); and on a card whose steps carry
+    // numbers, any un-numbered prose does ("Serve cider in mugs..." mid
+    // step 2 of the hot-spiced-cider card). Nothing is invented: the line
+    // itself must have been scanned.
+    private fun isStepTail(line: String, prevStepText: String, numberedMode: Boolean): Boolean {
+        val t = line.trim()
+        if (t.isEmpty() || t.split(Regex("\\s+")).size < 2) return false
+        if (STEP_NUM_RE.containsMatchIn(t)) return false
+        if (BULLET_PREFIX_RE.containsMatchIn(t)) return false
+        if (NUTRITION_RE.containsMatchIn(t)) return false
+        if (!SENTENCE_END_RE.containsMatchIn(prevStepText.trimEnd())) return true
+        // On a numbered card, a line with no leading amount is the current
+        // step's continuation ("For spice bag, place cinnamon, allspice,
+        // and the"); a leading amount only stays step text when a sentence
+        // ends mid-line ("...cheesecloth. Bring"), otherwise it is a real
+        // ingredient following the steps.
+        val amountLed = LEADING_QTY_RE.containsMatchIn(t) ||
+            LEADING_QTY_ALT_RE.containsMatchIn(t) || GARBLED_QTY_LINE_RE.containsMatchIn(t)
+        if (numberedMode && (!amountLed || MID_STEP_SIGNAL_RE.containsMatchIn(t))) return true
+        if (t.firstOrNull()?.isUpperCase() != true && !LEADING_QTY_RE.containsMatchIn(t) &&
+            !LEADING_QTY_ALT_RE.containsMatchIn(t)
+        ) return true
+        if (!isMeasurementLine(t)) {
+            val last = t.trimEnd(',', '.', ';', ':', '!', '?')
+                .split(Regex("\\s+")).lastOrNull()?.lowercase() ?: return false
+            return last in DANGLING_WORDS
+        }
+        return false
+    }
+
     private fun stripStepPrefix(line: String): String {
-        var s = line.trim().replace(NUM_PREFIX_RE, "")
+        var s = line.trim()
+        // "10 minutes. Meanwhile..." opens with a duration, not a step
+        // number: the number is prose, never stripped.
+        if (!DURATION_LED_RE.containsMatchIn(s)) s = s.replace(NUM_PREFIX_RE, "")
         s = s.replace(BULLET_PREFIX_RE, "")
         return s.trim().removePrefix(":").trim()
     }
@@ -829,6 +910,33 @@ object OcrParser {
     )
 
     private val SENTENCE_END_RE = Regex("[.!?]$")
+
+    // "10 minutes. Meanwhile..." opens with a duration, not a step number;
+    // a duration-led line is the open step's continuation.
+    private val DURATION_LED_RE = Regex(
+        "^\\s*\\d+\\s*(?:to\\s*\\d+\\s*)?(?:min(?:ute)?s?|hours?|hrs?|seconds?|secs?)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+    // A sentence that ends mid-line ("...cheesecloth. Bring") marks a
+    // wrapped instruction tail, not an ingredient.
+    private val MID_STEP_SIGNAL_RE = Regex("\\.\\s+[A-Za-z]")
+    // A numbered step marker carries its punctuation ("1." / "Step 2:");
+    // "1 teaspoon whole cloves" is a quantity, not step one.
+    private val STEP_NUM_RE = Regex(
+        "^\\s*(?:step\\s*)?\\d{1,2}\\s*[.)\\]](?=\\s|$)",
+        RegexOption.IGNORE_CASE,
+    )
+    // Nutrition footers arrive measurement-shaped ("9 mg sodium, 40 g
+    // carbo.", "Daily Values: 0% vit. A, 4% vit. C") but are never
+    // ingredients (Keith's hot-spiced-cider card).
+    private val NUTRITION_RE = Regex(
+        "(?i)\\b(?:nutrition facts|daily values|mg sodium|g carbo|g fiber|g pro\\.|cal\\.|chol\\.|total fat|vit\\.\\s*[a-z])",
+    )
+    private val DANGLING_WORDS = setOf(
+        "the", "a", "an", "of", "and", "or", "with", "for", "to", "in", "on",
+        "at", "by", "from", "into", "onto", "until", "about", "over", "before",
+        "after",
+    )
 
     private fun verbStart(text: String): Boolean {
         // The first word has to BE the verb: "cream the butter" is an
@@ -847,11 +955,13 @@ object OcrParser {
     // or the previous step is still open (no sentence-ending punctuation); a
     // capitalized verb line starts a fresh step. Nothing is invented: only
     // lines the recognizer actually saw are stitched back together.
-    private fun appendToSteps(out: MutableList<ParsedStep>, raw: String) {
+    private fun appendToSteps(out: MutableList<ParsedStep>, raw: String, forceJoin: Boolean = false) {
         val l = raw.trim()
         if (l.isEmpty() || isNoise(l)) return
-        val hasNum = NUM_PREFIX_RE.containsMatchIn(l)
-        val text = stripStepPrefix(l)
+        // A duration-led line ("10 minutes. Meanwhile...") is a wrapped
+        // step tail, never a step numbered 10.
+        val hasNum = NUM_PREFIX_RE.containsMatchIn(l) && !DURATION_LED_RE.containsMatchIn(l)
+        val text = if (forceJoin) l.trim() else stripStepPrefix(l)
         if (text.isBlank()) return
         val words = text.split(Regex("\\s+"))
         val firstWord = words[0].trimEnd('.', '!', '?', ',').lowercase()
@@ -868,8 +978,8 @@ object OcrParser {
             }
             return
         }
-        val startsNew = hasNum || prev == null ||
-            (words[0].firstOrNull()?.isUpperCase() == true && (!prevOpen || verbStart(text)))
+        val startsNew = !forceJoin && (hasNum || prev == null ||
+            (words[0].firstOrNull()?.isUpperCase() == true && (!prevOpen || verbStart(text))))
         // Description prose ("creamy, delicious, and quick to prepare as
         // well.") that the layout sweep or a closed step leaves orphaned is
         // a sentence, never an instruction; a line joining an open step is
@@ -888,7 +998,7 @@ object OcrParser {
         // cup."). Prose after prose ("creamy, delicious...") still drops.
         val prevRealInstruction = prev != null &&
             (hasStepVerb(prev.instructionText) || verbStart(prev.instructionText))
-        if (isStepProse(text) && !(prevOpen && (fragmentStart || prevRealInstruction))) return
+        if (isStepProse(text) && !forceJoin && !(prevOpen && (fragmentStart || prevRealInstruction))) return
         if (!startsNew && prev != null) {
             out[out.size - 1] = ParsedStep(
                 (prev.instructionText + " " + text).trim(),

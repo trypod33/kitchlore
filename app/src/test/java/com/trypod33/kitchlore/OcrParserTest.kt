@@ -323,4 +323,114 @@ class OcrParserTest {
         assertTrue("cider missing: $ingText", ingText.contains("apple cider"))
         assertTrue("step missing: $stepText", stepText.contains("Combine"))
     }
+
+    // Keith's hot-spiced-cider cookbook card: no Ingredients header at all,
+    // numbered steps whose tails capitalize ("For spice bag, ..."), a
+    // duration opening a wrapped line ("10 minutes. Meanwhile..."), a step
+    // verb mid-step ("Serve cider in mugs..."), nutrition footers riding in
+    // as measurement-shaped lines, and page-margin fragments from the
+    // neighboring card ("ite,", "vder,"). v0.5.13 dropped half of step 1,
+    // split step 2 in two, and let the nutrition lines in as ingredients.
+    private fun ciderBoxes(): List<OcrParser.OcrLineBox> = listOf(
+            box("Daily Values: 13% vit. A, 1% vit. C, 11% calcium, 0% iron", 500, 20, 2620, 110),
+            box("HOT SPICED CIDER", 940, 360, 2620, 480),
+            box("PREP: 10 MINUTES COOK: 15 MINUTES", 500, 495, 1850, 570),
+            box("Fast", 560, 645, 900, 720),
+            box("No-Fat", 1700, 645, 2250, 720),
+            box("ite,", 0, 700, 300, 780),
+            box("8 cups apple cider or apple juice", 560, 900, 2500, 990),
+            box("Y4 to Y2 cup packed brown sugar", 500, 1000, 2400, 1090),
+            box("6 inches stick cinnamon", 560, 1100, 1900, 1190),
+            box("er", 0, 1150, 250, 1240),
+            box("1 teaspoon whole allspice", 560, 1200, 2100, 1290),
+            box("I teasp00n whole cloves", 560, 1300, 1900, 1390),
+            box("vder,", 0, 1350, 300, 1440),
+            box("8 thin orange edges (optional)", 560, 1400, 2250, 1490),
+            box("ocoa", 0, 1500, 300, 1580),
+            box("8 whole cloves (optional)", 560, 1500, 1900, 1590),
+            box("1. In a saucepan combine cider and brown sugar.", 500, 1700, 2500, 1790),
+            box("For spice bag, place cinnamon, allspice, and the", 500, 1800, 2500, 1890),
+            box("1 teaspoon whole cloves on a double-thick, 6-inch-", 500, 1900, 2500, 1990),
+            box("square piece of 100% cotton cheesecloth. Bring", 500, 2000, 2400, 2090),
+            box("corners together and tie with a clean string (see", 500, 2100, 2400, 2190),
+            box("photo, page 83). Add bag to cider mixture.", 500, 2200, 2250, 2290),
+            box("2. Bring to bowling; reduce heat. Cover and simmer", 500, 2320, 2500, 2410),
+            box("10 minutes. Meanwhile, if desired, stud orange", 500, 2420, 2400, 2510),
+            box("wedges with cloves. Remove spice bag; discard.", 500, 2520, 2300, 2610),
+            box("Serve cider in mugs with studied orange edges,", 500, 2620, 2450, 2710),
+            box("if desired. Makes 8 (about 8-ounce) servings.", 500, 2720, 2250, 2810),
+            box("Nutrition Facts per serving: 145 cal., 0 g total fat, 0 mg chol.,", 500, 2880, 2650, 2960),
+            box("9 mg sodium, 40 g carbo., 0 g fiber, 0 g pro.", 500, 2970, 2100, 3050),
+            box("Daily Values: 0% vit. A, 4% vit. C, 1% calcium, 9% iron", 500, 3060, 2400, 3140),
+        )
+
+    @Test
+    fun hotSpicedCiderCardParses() {
+        val boxes = listOf(
+            box("Daily Values: 13% vit. A, 1% vit. C, 11% calcium, 0% iron", 500, 20, 2620, 110),
+            box("HOT SPICED CIDER", 940, 360, 2620, 480),
+            box("PREP: 10 MINUTES COOK: 15 MINUTES", 500, 495, 1850, 570),
+            box("Fast", 560, 645, 900, 720),
+            box("No-Fat", 1700, 645, 2250, 720),
+            box("ite,", 0, 700, 300, 780),
+            box("8 cups apple cider or apple juice", 560, 900, 2500, 990),
+            box("Y4 to Y2 cup packed brown sugar", 500, 1000, 2400, 1090),
+            box("6 inches stick cinnamon", 560, 1100, 1900, 1190),
+            box("er", 0, 1150, 250, 1240),
+            box("1 teaspoon whole allspice", 560, 1200, 2100, 1290),
+            box("I teasp00n whole cloves", 560, 1300, 1900, 1390),
+            box("vder,", 0, 1350, 300, 1440),
+            box("8 thin orange edges (optional)", 560, 1400, 2250, 1490),
+            box("ocoa", 0, 1500, 300, 1580),
+            box("8 whole cloves (optional)", 560, 1500, 1900, 1590),
+            box("1. In a saucepan combine cider and brown sugar.", 500, 1700, 2500, 1790),
+            box("For spice bag, place cinnamon, allspice, and the", 500, 1800, 2500, 1890),
+            box("1 teaspoon whole cloves on a double-thick, 6-inch-", 500, 1900, 2500, 1990),
+            box("square piece of 100% cotton cheesecloth. Bring", 500, 2000, 2400, 2090),
+            box("corners together and tie with a clean string (see", 500, 2100, 2400, 2190),
+            box("photo, page 83). Add bag to cider mixture.", 500, 2200, 2250, 2290),
+            box("2. Bring to bowling; reduce heat. Cover and simmer", 500, 2320, 2500, 2410),
+            box("10 minutes. Meanwhile, if desired, stud orange", 500, 2420, 2400, 2510),
+            box("wedges with cloves. Remove spice bag; discard.", 500, 2520, 2300, 2610),
+            box("Serve cider in mugs with studied orange edges,", 500, 2620, 2450, 2710),
+            box("if desired. Makes 8 (about 8-ounce) servings.", 500, 2720, 2250, 2810),
+            box("Nutrition Facts per serving: 145 cal., 0 g total fat, 0 mg chol.,", 500, 2880, 2650, 2960),
+            box("9 mg sodium, 40 g carbo., 0 g fiber, 0 g pro.", 500, 2970, 2100, 3050),
+            box("Daily Values: 0% vit. A, 4% vit. C, 1% calcium, 9% iron", 500, 3060, 2400, 3140),
+        )
+        val text = boxes.joinToString("\n") { it.text }
+        val parsed = OcrParser.parse(text, boxes = boxes)
+
+        assertTrue("title: ${parsed.title}", parsed.title == "HOT SPICED CIDER")
+        val ingText = parsed.ingredients.joinToString(" | ") { it.rawText.ifBlank { it.name } }
+        val stepText = parsed.steps.joinToString(" | ") { it.instructionText }
+
+        assertTrue("7 ingredients, got ${parsed.ingredients.size}: $ingText", parsed.ingredients.size == 7)
+        assertTrue("cider: $ingText", ingText.contains("apple cider or apple juice"))
+        assertTrue("brown sugar: $ingText", ingText.contains("packed brown sugar"))
+        assertTrue("cinnamon: $ingText", ingText.contains("stick cinnamon"))
+        assertTrue("allspice: $ingText", ingText.contains("whole allspice"))
+        assertTrue("teaspoon cloves: $ingText", ingText.contains("teaspoon whole cloves"))
+        assertTrue("orange wedges: $ingText", ingText.contains("orange wedges"))
+        assertFalse("no nutrition in ingredients: $ingText", ingText.contains("mg sodium"))
+        assertFalse("no daily values: $ingText", ingText.contains("Daily Values"))
+        assertFalse("no step tail in ingredients: $ingText", ingText.contains("photo, page 83"))
+        assertFalse("no margin fragments: $ingText", ingText.contains("vder"))
+        assertFalse("no badges: $ingText", ingText.contains("No-Fat"))
+
+        assertTrue("2 steps, got ${parsed.steps.size}: $stepText", parsed.steps.size == 2)
+        assertTrue("step 1 saucepan: $stepText", stepText.contains("In a saucepan combine cider and brown sugar"))
+        assertTrue("step 1 spice bag: $stepText ING=[$ingText]", stepText.contains("For spice bag"))
+        assertTrue("step 1 cheesecloth: $stepText", stepText.contains("cheesecloth"))
+        assertTrue("step 1 add bag: $stepText", stepText.contains("Add bag to cider mixture"))
+        assertTrue("step 2 boiling: $stepText", stepText.contains("Bring to boiling"))
+        assertTrue("step 2 simmer 10: $stepText", stepText.contains("simmer 10 minutes"))
+        assertTrue("step 2 serve: $stepText", stepText.contains("Serve cider in mugs"))
+        assertFalse("servings note is not a step: $stepText", stepText.contains("Makes 8"))
+        assertFalse("no bowling: $stepText", stepText.contains("bowling"))
+        assertFalse("no studied: $stepText", stepText.contains("studied"))
+        assertFalse("no edges: $stepText", stepText.contains("orange edges"))
+        assertFalse("no margin fragments in steps: $stepText", stepText.contains("vder"))
+        assertTrue("servings 8: ${parsed.baseServings}", parsed.baseServings == 8)
+    }
 }

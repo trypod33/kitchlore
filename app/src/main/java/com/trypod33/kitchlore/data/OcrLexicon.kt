@@ -10,6 +10,17 @@ package com.trypod33.kitchlore.data
  */
 object OcrLexicon {
 
+    // A few misreads produce real words one edit away ("boiling" read as
+    // "bowling", "wedges" as "edges" on Keith's hot-spiced-cider card),
+    // which the one-edit word fixer can never touch because both spellings
+    // are real. Only unambiguous recipe phrases are rewritten; nothing is
+    // invented beyond what the line itself carried.
+    private val PHRASE_FIXES = listOf(
+        Regex("(?i)\\bto bowling\\b") to "to boiling",
+        Regex("(?i)\\borange edges\\b") to "orange wedges",
+        Regex("(?i)\\bstudied\\b") to "studded",
+    )
+
 private val BASE_WORDS = setOf(
 "about",
 "after",
@@ -544,7 +555,11 @@ private val BASE_WORDS = setOf(
 "spatula",
 "speed",
 "speeds",
-"spinach",
+"spice",
+"spiced",
+"spices",
+"wedges", "boiling", "studded",
+        "spinach",
 "splash",
 "split",
 "spoon",
@@ -674,9 +689,13 @@ private val BASE_WORDS = setOf(
     private const val MAX_LEN = 15
 
     /** Corrects single-word OCR garbles inside a line; hyphenated parts are handled piece by piece. */
+    private fun applyPhraseFixes(s: String): String =
+        PHRASE_FIXES.fold(s) { acc, p -> p.first.replace(acc, p.second) }
+
     fun fixLine(line: String): String {
-        val s = if (line.contains("0z") || line.contains("0Z"))
-            Regex("\\b0[zZ]\\b").replace(line, "oz") else line
+        var s = applyPhraseFixes(line)
+        s = if (s.contains("0z") || s.contains("0Z"))
+            Regex("\\b0[zZ]\\b").replace(s, "oz") else s
         if (s.length < MIN_LEN) return s
         val parts = s.split(" ")
         if (parts.none { needsFix(it) || digitWordFix(it) != null }) return s
@@ -775,5 +794,13 @@ private val BASE_WORDS = setOf(
             }
         }
         return out
+    }
+
+    // Is this a word the lexicon knows? Used to tell real one-word
+    // ingredient tails ("broth") from torn page-margin fragments ("vder,").
+    fun isKnownWord(token: String): Boolean {
+        val w = token.trim(',', '.', ';', ':', '!', '?', '(', ')').lowercase()
+        if (w.length < 2) return false
+        return w in WORDS
     }
 }
