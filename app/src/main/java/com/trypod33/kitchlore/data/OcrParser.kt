@@ -160,7 +160,7 @@ object OcrParser {
     )
 
     private val NUM_PREFIX_RE = Regex("^\\s*(?:step\\s*)?(\\d{1,2})(?:[.)\\]:])?(?=\\s|$)", RegexOption.IGNORE_CASE)
-    private val BULLET_PREFIX_RE = Regex("^\\s*[•*\\-–]\\s+")
+    private val BULLET_PREFIX_RE = Regex("^\\s*[•·*\\-–]\\s+")
     private val TIMER_RE = Regex(
         "(\\d+)\\s*(?:to\\s*\\d+\\s*)?(min(?:ute)?s?|hours?|hrs?|seconds?|secs?)\\b",
         RegexOption.IGNORE_CASE,
@@ -365,13 +365,17 @@ object OcrParser {
 
         when {
             layout != null && layout.first.isNotEmpty() -> {
-                val ingLines = rejoinOrphanAmounts(
-                    joinHyphenLines(
-                        layout.first
-                            .map { OcrLexicon.fixLine(it.trim()) }
-                            .flatMap { if (layoutFromRegions) splitIngredientBlob(it) else listOf(it) },
+                val ingLines = run {
+                    val raw = layout.first.map { OcrLexicon.fixLine(it.trim()) }
+                    val joined = if (layoutFromRegions) joinPipeLines(raw) else raw
+                    rejoinOrphanAmounts(
+                        joinHyphenLines(
+                            joined.flatMap {
+                                if (layoutFromRegions) splitIngredientBlob(it) else listOf(it)
+                            },
+                        )
                     )
-                )
+                }
                 ingLines.forEach { l ->
                     if (isIngredientNoise(l)) return@forEach
                     val prev = ingredients.lastOrNull()
@@ -973,7 +977,42 @@ object OcrParser {
     )
     private val COMMA_DIGIT_RE = Regex(",\\s*(?:and\\s+)?(?=\\d)")
 
+    // A pipe list wraps across lines ("...2 teaspoons baking" / "powder |
+    // 1/2 teaspoon..."). A line that opens with a new amount or bullet
+    // starts a new item; anything else continues the item the wrap broke.
+    private fun joinPipeLines(lines: List<String>): List<String> {
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            var cur = lines[i]
+            while (cur.contains('|') && !cur.trimEnd().endsWith('|') && i + 1 < lines.size) {
+                val nxt = lines[i + 1]
+                val head = nxt.trimStart()
+                if (head.startsWith("·") || head.startsWith("•") ||
+                    LEADING_QTY_RE.containsMatchIn(head)
+                ) break
+                cur = cur.trimEnd() + " " + head
+                i++
+            }
+            out += cur
+            i++
+        }
+        return out
+    }
+
     private fun splitIngredientBlob(line: String): List<String> {
+        // Pipe-separated lists ("Ingredients: 2 cups flour | 2 tablespoons
+        // sugar | ...") split at the pipes; the header word is dropped.
+        if (line.count { it == '|' } >= 2) {
+            val cleaned = line.replace(Regex("(?i)^\\s*ingredients?\\s*[:;.-]?\\s*"), "").trim()
+            val parts = cleaned.split('|').map { it.trim() }.filter { it.isNotEmpty() }
+            if (parts.size >= 3 &&
+                parts.count { LEADING_QTY_RE.containsMatchIn(it) || AMOUNT_ANY_RE.containsMatchIn(it) } >=
+                    parts.size - 1
+            ) {
+                return parts
+            }
+        }
         if (line.count { it == ';' } >= 2) {
             val parts = line.split(';').map { it.trim() }.filter { it.isNotEmpty() }
             if (parts.size >= 3 &&

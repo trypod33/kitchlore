@@ -10,3 +10,6 @@
 local.properties
 *.keystore
 app/build/
+
+# local build artifacts (releases live on the Releases page)
+*.apk

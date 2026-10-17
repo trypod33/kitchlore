@@ -651,4 +651,72 @@ class OcrParserTest {
         assertEquals(6, parsed.steps.size)
         assertTrue(parsed.steps[0].instructionText.startsWith("Toss"))
     }
+
+    @Test
+    fun hybridReadsTwoRecipesOnePage() {
+        val blocks = listOf(
+            RegionBlock("Fluffy Buttermilk Pancakes", 63, 40, 575, 78),
+            RegionBlock(
+                "Ingredients: 2 cups all-purpose flour | 2 tablespoons sugar | 2 teaspoons baking\n" +
+                    "powder | 1/2 teaspoon baking soda | 1/2 teaspoon salt | 2 cups buttermilk | 2 large\n" +
+                    "eggs | 1/4 cup melted butter",
+                63, 95, 900, 165,
+            ),
+            RegionBlock("1) Whisk the flour, sugar, baking powder, baking soda, and salt in a large bowl.", 63, 180, 900, 200),
+            RegionBlock("2) In a separate bowl, beat the buttermilk, eggs, and melted butter.", 63, 205, 900, 225),
+            RegionBlock("3) Pour the wet ingredients into the dry and stir until just combined; lumps are fine.", 63, 230, 900, 250),
+            RegionBlock("4) Heat a griddle over medium heat and grease lightly.", 63, 255, 900, 275),
+            RegionBlock("5) Pour 1/4 cup batter per pancake; flip when bubbles form, about 2 minutes per side.", 63, 280, 900, 300),
+            RegionBlock("Chewy Chocolate Chip Cookies", 63, 370, 675, 405),
+            RegionBlock("1. Preheat oven to 375\u00b0F. Line baking sheets with\nparchment.", 63, 425, 590, 465),
+            RegionBlock("2. Whisk flour, baking soda, and salt in a bowl.", 63, 480, 590, 500),
+            RegionBlock("3. Beat butter and both sugars until fluffy, about 3\nminutes.", 63, 505, 590, 545),
+            RegionBlock("4. Beat in eggs one at a time, then vanilla.", 63, 565, 590, 585),
+            RegionBlock("5. Fold in the dry ingredients until just combined, then\nthe chocolate chips.", 63, 600, 590, 640),
+            RegionBlock("6. Scoop 2-tablespoon balls onto sheets, 2 inches\napart.", 63, 655, 590, 695),
+            RegionBlock("\u00b7 2 1/4 cups all-purpose flour", 645, 425, 895, 445),
+            RegionBlock("\u00b7 1 teaspoon baking soda", 645, 450, 895, 470),
+            RegionBlock("\u00b7 1 teaspoon salt", 645, 475, 895, 495),
+            RegionBlock("\u00b7 1 cup butter, softened", 645, 500, 895, 520),
+            RegionBlock("\u00b7 3/4 cup granulated sugar", 645, 525, 895, 545),
+            RegionBlock("\u00b7 3/4 cup brown sugar", 645, 550, 895, 570),
+            RegionBlock("\u00b7 2 large eggs", 645, 575, 895, 595),
+            RegionBlock("\u00b7 2 teaspoons vanilla extract", 645, 600, 895, 620),
+            RegionBlock("\u00b7 2 cups chocolate chips", 645, 625, 895, 645),
+        )
+        val labels = RegionLabeler.resolveLabels(blocks, RegionLabeler.cueLabels(blocks), null)
+        val groups = RegionLabeler.splitRecipes(blocks, labels)
+        assertEquals(2, groups.size)
+        val recipes = groups.map { g ->
+            val title = StringBuilder(); val ing = StringBuilder(); val steps = StringBuilder()
+            for (b in g) when (labels[blocks.indexOf(b)]) {
+                RegionKind.TITLE -> title.append(b.text).append('\n')
+                RegionKind.INGREDIENTS -> ing.append(b.text).append('\n')
+                RegionKind.STEPS -> steps.append(b.text).append('\n')
+                RegionKind.OTHER -> {}
+            }
+            OcrParser.parse(
+                blocks.joinToString("\n") { it.text }, emptyList(), emptyMap(), emptyList(),
+                regions = OcrParser.Regions(title.toString(), ing.toString(), steps.toString()),
+            )
+        }
+        val first = recipes[0]
+        assertEquals("Fluffy Buttermilk Pancakes", first.title)
+        assertEquals(8, first.ingredients.size)
+        assertTrue(first.ingredients.any { it.name.contains("melted butter") })
+        assertEquals(5, first.steps.size)
+        assertTrue(first.steps[0].instructionText.startsWith("Whisk"))
+        val second = recipes[1]
+        assertEquals("Chewy Chocolate Chip Cookies", second.title)
+        assertEquals(
+            "ingredients: " + second.ingredients.joinToString(" | ") { it.rawText.ifBlank { it.name } },
+            9,
+            second.ingredients.size,
+        )
+        assertTrue(second.ingredients.any { it.name.contains("granulated sugar") })
+        assertTrue(second.ingredients.none { it.name.startsWith("\u00b7") })
+        assertEquals(6, second.steps.size)
+        assertTrue(second.steps[0].instructionText.startsWith("Preheat"))
+        assertTrue(second.steps.last().instructionText.contains("apart"))
+    }
 }

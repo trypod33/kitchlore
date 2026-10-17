@@ -110,8 +110,20 @@ object RegionLabeler {
     private val UNITS_RE = "(cups?|tablespoons?|tbsp|tbs|teaspoons?|tsp|lbs?|pounds?|ounces?|oz|cloves?|sticks?|pinch|dash|quarts?|pints?|packages?|envelopes?|cans?|slices?|sheets?)"
 
     // A block that OPENS with an amount is an ingredient list almost always.
+    // The optional bullet lets bulleted lists ("• 2 1/4 cups flour") read as
+    // amount-led too.
     private val CUE_AMOUNT_RE = Regex(
-        "(?i)^(\\d+[\\s\\d/.\\u2044-]{0,6})\\s*$UNITS_RE\\b",
+        "(?i)^[•·*\\-–]?\\s*(\\d+[\\s\\d/.\\u2044-]{0,6})\\s*$UNITS_RE\\b",
+    )
+
+    // A block that opens with any digit after an optional bullet: catches
+    // unit-less count lines ("· 2 large eggs", "3 eggs, beaten").
+    private val CUE_DIGIT_RE = Regex("^[•·*\\-–]?\\s*\\d+\\b")
+
+    // Stray timing and temperature lines ("10 minutes", "375°F") are not
+    // ingredients even though a digit leads them.
+    private val CUE_TIME_RE = Regex(
+        "(?i)\\b\\d+\\s*(minutes?|mins?|hours?|hrs?|seconds?|secs?|degrees?|[°º]\\s*[FC])\\b",
     )
 
     // Amounts anywhere in the block, not just the line start: fused prose
@@ -137,6 +149,7 @@ object RegionLabeler {
     fun cueLabels(blocks: List<RegionBlock>): List<CueGuess> {
         val out = mutableListOf<CueGuess>()
         var titleTaken = false
+        var sawRecipeBody = false
         for ((i, b) in blocks.withIndex()) {
             val flat = b.text.replace(Regex("\\s+"), " ").trim()
             val wordCount = flat.split(" ").size
@@ -158,15 +171,28 @@ object RegionLabeler {
                 titleTaken = true
                 continue
             }
+            val amounts = CUE_AMOUNT_ANY_RE.findAll(flat).count()
+            val verbs = CUE_VERB_RE.findAll(flat).count()
             if (OcrParser.NUTRITION_RE.containsMatchIn(flat)) { out += CueGuess(RegionKind.OTHER); continue }
             if (CUE_NOISE_RE.containsMatchIn(flat)) { out += CueGuess(RegionKind.OTHER); continue }
-            if (CUE_HEADER_RE.containsMatchIn(flat)) { out += CueGuess(RegionKind.OTHER); continue }
+            // "Ingredients: 2 cups flour | ..." is a list, not a header: a
+            // header line that carries amounts is ingredient material.
+            if (CUE_HEADER_RE.containsMatchIn(flat) && amounts == 0) { out += CueGuess(RegionKind.OTHER); continue }
             if (LONE_MARK_RE.containsMatchIn(flat)) { out += CueGuess(RegionKind.OTHER); continue }
             if (CAPS_ONLY_RE.matches(flat)) { out += CueGuess(RegionKind.OTHER); continue }
-            val amounts = CUE_AMOUNT_ANY_RE.findAll(flat).count()
-            val startsAmount = CUE_AMOUNT_RE.containsMatchIn(first)
+            // Second recipe on the same page: once recipe material has
+            // appeared, a short title-case line with no amounts or verbs is
+            // the next recipe's name. One-word blocks stay out ("parchment."
+            // is a wrapped tail, not a title).
+            if (sawRecipeBody && lines.size == 1 && wordCount in 2..8 &&
+                amounts == 0 && verbs == 0 && !flat.startsWith("[") &&
+                flat.first().isUpperCase()
+            ) {
+                out += CueGuess(RegionKind.TITLE)
+                continue
+            }
+            val startsAmount = CUE_AMOUNT_RE.containsMatchIn(first) || CUE_DIGIT_RE.containsMatchIn(first)
             val isStep = CUE_STEP_MARK_RE.containsMatchIn(first)
-            val verbs = CUE_VERB_RE.findAll(flat).count()
             out += CueGuess(
                 when {
                     isStep -> RegionKind.STEPS
@@ -176,10 +202,18 @@ object RegionLabeler {
                     amounts >= 2 && verbs <= 2 -> RegionKind.INGREDIENTS
                     verbs >= 2 && amounts == 0 -> RegionKind.STEPS
                     verbs >= 1 && amounts <= 1 -> RegionKind.STEPS
+                    // Digit-led with no unit ("· 2 large eggs"): count-style
+                    // ingredient lines carry no unit word at all.
+                    startsAmount && amounts == 0 && verbs == 0 &&
+                        !CUE_TIME_RE.containsMatchIn(flat) -> RegionKind.INGREDIENTS
                     amounts == 0 && verbs == 0 -> RegionKind.OTHER
                     else -> null
                 },
             )
+            when (out.last().kind) {
+                RegionKind.INGREDIENTS, RegionKind.STEPS -> sawRecipeBody = true
+                else -> {}
+            }
         }
         return out
     }
@@ -234,5 +268,25 @@ object RegionLabeler {
         } catch (t: Throwable) {
             resolveLabels(blocks, cues, null)
         }
+    }
+
+    /**
+     * Splits labeled blocks into one group per recipe: each TITLE block
+     * starts a new group. Single-title pages come back as one group, so the
+     * one-recipe path is untouched.
+     */
+    fun splitRecipes(blocks: List<RegionBlock>, labels: List<RegionKind>): List<List<RegionBlock>> {
+        if (labels.count { it == RegionKind.TITLE } <= 1) return listOf(blocks)
+        val out = mutableListOf<List<RegionBlock>>()
+        var current = mutableListOf<RegionBlock>()
+        for ((b, k) in blocks.zip(labels)) {
+            if (k == RegionKind.TITLE && current.isNotEmpty()) {
+                out += current
+                current = mutableListOf()
+            }
+            current += b
+        }
+        if (current.isNotEmpty()) out += current
+        return out
     }
 }

@@ -97,6 +97,9 @@ fun ScanRoute(
     // Multi-photo recipes: each capture lands here, and the reviewer gets
     // one merged recipe with the overlapping lines deduped.
     var staged by remember { mutableStateOf<List<Pair<ParsedRecipe, String?>>>(emptyList()) }
+    // A page can hold more than one recipe; each one gets its own review,
+    // one after another.
+    var pendingReviews by remember { mutableStateOf<List<Pair<ParsedRecipe, String?>>>(emptyList()) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
     val providerFuture = remember { ProcessCameraProvider.getInstance(context) }
@@ -110,6 +113,18 @@ fun ScanRoute(
 
     fun stage(recipe: ParsedRecipe, path: String?) {
         staged = staged + (recipe to path)
+        aiStatus = null
+    }
+
+    fun handleParsed(recipes: List<ParsedRecipe>, path: String?) {
+        if (recipes.size <= 1) {
+            val only = recipes.firstOrNull() ?: return
+            stage(only, path)
+            return
+        }
+        // One page, several recipes: review them one at a time, starting now.
+        parsed = recipes.first() to path
+        pendingReviews = recipes.drop(1).map { it to path }
         aiStatus = null
     }
 
@@ -137,9 +152,9 @@ fun ScanRoute(
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             busy = true
-            runOcr(context, uri, rules) { p, path ->
+            runOcr(context, uri, rules) { recipes, path ->
                 busy = false
-                stage(p, path)
+                handleParsed(recipes, path)
             }
         }
     }
@@ -157,8 +172,8 @@ fun ScanRoute(
                 busy = false
                 return
             }
-            runOcr(context, uris[i], rules) { p, path ->
-                stage(p, path)
+            runOcr(context, uris[i], rules) { recipes, path ->
+                recipes.forEach { stage(it, path) }
                 next(i + 1)
             }
         }
@@ -196,8 +211,24 @@ fun ScanRoute(
             parsed = p.first,
             photoPath = p.second,
             sourceNote = if (mode == "photo") "Imported from photo" else "Scanned from camera",
-            onSaved = onDone,
-            onCancel = onBack,
+            onSaved = {
+                val next = pendingReviews
+                if (next.isEmpty()) {
+                    onDone()
+                } else {
+                    pendingReviews = next.drop(1)
+                    parsed = next.first()
+                }
+            },
+            onCancel = {
+                val next = pendingReviews
+                if (next.isEmpty()) {
+                    onBack()
+                } else {
+                    pendingReviews = next.drop(1)
+                    parsed = next.first()
+                }
+            },
         )
         return
     }
@@ -328,9 +359,9 @@ fun ScanRoute(
                             ContextCompat.getMainExecutor(context),
                             object : ImageCapture.OnImageSavedCallback {
                                 override fun onImageSaved(results: ImageCapture.OutputFileResults) {
-                                    runOcr(context, out, rules) { parsedRecipe, path ->
+                                    runOcr(context, out, rules) { recipes, path ->
                                         busy = false
-                                        stage(parsedRecipe, path)
+                                        handleParsed(recipes, path)
                                     }
                                 }
 
@@ -383,7 +414,7 @@ private fun runOcr(
     context: android.content.Context,
     image: Any,
     rules: Map<String, String>,
-    onDone: (ParsedRecipe, String?) -> Unit,
+    onDone: (List<ParsedRecipe>, String?) -> Unit,
 ) {
     val input = try {
         when (image) {
@@ -395,7 +426,7 @@ private fun runOcr(
         null
     }
     if (input == null) {
-        onDone(OcrParser.parse("", emptyList(), rules), null)
+        onDone(listOf(OcrParser.parse("", emptyList(), rules)), null)
         return
     }
     val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -420,29 +451,33 @@ private fun runOcr(
                 } catch (t: Throwable) {
                     null
                 }
-                val regions = labels?.let { ls ->
-                    val title = StringBuilder()
-                    val ing = StringBuilder()
-                    val steps = StringBuilder()
-                    for ((b, k) in regionBlocks.zip(ls)) when (k) {
-                        RegionKind.TITLE -> title.append(b.text).append('\n')
-                        RegionKind.INGREDIENTS -> ing.append(b.text).append('\n')
-                        RegionKind.STEPS -> steps.append(b.text).append('\n')
-                        RegionKind.OTHER -> {}
-                    }
-                    OcrParser.Regions(title.toString(), ing.toString(), steps.toString())
-                }
-                val parsedRecipe = OcrParser.parse(visionText.text, blocks, rules, boxes, regions = regions)
                 val path = when (image) {
                     is File -> image.absolutePath
                     is Uri -> copyUriToPhotos(context, image)
                     else -> null
                 }
-                onDone(parsedRecipe, path)
+                val recipes: List<ParsedRecipe> = labels?.let { ls ->
+                    RegionLabeler.splitRecipes(regionBlocks, ls).map { group ->
+                        val title = StringBuilder()
+                        val ing = StringBuilder()
+                        val steps = StringBuilder()
+                        for (b in group) when (ls[regionBlocks.indexOf(b)]) {
+                            RegionKind.TITLE -> title.append(b.text).append('\n')
+                            RegionKind.INGREDIENTS -> ing.append(b.text).append('\n')
+                            RegionKind.STEPS -> steps.append(b.text).append('\n')
+                            RegionKind.OTHER -> {}
+                        }
+                        OcrParser.parse(
+                            visionText.text, blocks, rules, boxes,
+                            regions = OcrParser.Regions(title.toString(), ing.toString(), steps.toString()),
+                        )
+                    }
+                } ?: listOf(OcrParser.parse(visionText.text, blocks, rules, boxes))
+                onDone(recipes, path)
             }
         }
         .addOnFailureListener {
-            onDone(OcrParser.parse("", emptyList(), rules), null)
+            onDone(listOf(OcrParser.parse("", emptyList(), rules)), null)
         }
 }
 

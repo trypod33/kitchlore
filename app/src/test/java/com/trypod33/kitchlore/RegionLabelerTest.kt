@@ -279,4 +279,98 @@ class RegionLabelerTest {
         )
         assertEquals(RegionKind.STEPS, RegionLabeler.fallbackKind(steps))
     }
+
+    private val twoRecipesPage = listOf(
+        RegionBlock("Fluffy Buttermilk Pancakes", 63, 40, 575, 78),
+        RegionBlock(
+            "Ingredients: 2 cups all-purpose flour | 2 tablespoons sugar | 2 teaspoons baking\n" +
+                "powder | 1/2 teaspoon baking soda | 1/2 teaspoon salt | 2 cups buttermilk | 2 large\n" +
+                "eggs | 1/4 cup melted butter",
+            63, 95, 900, 165,
+        ),
+        RegionBlock("1) Whisk the flour, sugar, baking powder, baking soda, and salt in a large bowl.", 63, 180, 900, 200),
+        RegionBlock("2) In a separate bowl, beat the buttermilk, eggs, and melted butter.", 63, 205, 900, 225),
+        RegionBlock("3) Pour the wet ingredients into the dry and stir until just combined; lumps are fine.", 63, 230, 900, 250),
+        RegionBlock("4) Heat a griddle over medium heat and grease lightly.", 63, 255, 900, 275),
+        RegionBlock("5) Pour 1/4 cup batter per pancake; flip when bubbles form, about 2 minutes per side.", 63, 280, 900, 300),
+        RegionBlock("Chewy Chocolate Chip Cookies", 63, 370, 675, 405),
+        RegionBlock("1. Preheat oven to 375\u00b0F. Line baking sheets with\nparchment.", 63, 425, 590, 465),
+        RegionBlock("2. Whisk flour, baking soda, and salt in a bowl.", 63, 480, 590, 500),
+        RegionBlock("3. Beat butter and both sugars until fluffy, about 3\nminutes.", 63, 505, 590, 545),
+        RegionBlock("4. Beat in eggs one at a time, then vanilla.", 63, 565, 590, 585),
+        RegionBlock("5. Fold in the dry ingredients until just combined, then\nthe chocolate chips.", 63, 600, 590, 640),
+        RegionBlock("6. Scoop 2-tablespoon balls onto sheets, 2 inches\napart.", 63, 655, 590, 695),
+        RegionBlock("\u00b7 2 1/4 cups all-purpose flour", 645, 425, 895, 445),
+        RegionBlock("\u00b7 1 teaspoon baking soda", 645, 450, 895, 470),
+        RegionBlock("\u00b7 1 teaspoon salt", 645, 475, 895, 495),
+        RegionBlock("\u00b7 1 cup butter, softened", 645, 500, 895, 520),
+        RegionBlock("\u00b7 3/4 cup granulated sugar", 645, 525, 895, 545),
+        RegionBlock("\u00b7 3/4 cup brown sugar", 645, 550, 895, 570),
+        RegionBlock("\u00b7 2 large eggs", 645, 575, 895, 595),
+        RegionBlock("\u00b7 2 teaspoons vanilla extract", 645, 600, 895, 620),
+        RegionBlock("\u00b7 2 cups chocolate chips", 645, 625, 895, 645),
+    )
+
+    @Test
+    fun cuesReadTwoRecipesOnePage() {
+        assertKinds(
+            twoRecipesPage,
+            listOf(
+                RegionKind.TITLE, RegionKind.INGREDIENTS,
+                RegionKind.STEPS, RegionKind.STEPS, RegionKind.STEPS, RegionKind.STEPS, RegionKind.STEPS,
+                RegionKind.TITLE,
+                RegionKind.STEPS, RegionKind.STEPS, RegionKind.STEPS, RegionKind.STEPS,
+                RegionKind.STEPS, RegionKind.STEPS,
+                RegionKind.INGREDIENTS, RegionKind.INGREDIENTS, RegionKind.INGREDIENTS,
+                RegionKind.INGREDIENTS, RegionKind.INGREDIENTS, RegionKind.INGREDIENTS,
+                RegionKind.INGREDIENTS, RegionKind.INGREDIENTS, RegionKind.INGREDIENTS,
+            ),
+        )
+    }
+
+    @Test
+    fun cuesNeedNoModelOnTheTwoRecipePage() {
+        assertTrue(RegionLabeler.cueLabels(twoRecipesPage).none { it.kind == null })
+    }
+
+    @Test
+    fun splitRecipesCutsAtEachTitle() {
+        val labels = RegionLabeler.cueLabels(twoRecipesPage).map { it.kind!! }
+        val groups = RegionLabeler.splitRecipes(twoRecipesPage, labels)
+        assertEquals(2, groups.size)
+        assertEquals("Fluffy Buttermilk Pancakes", groups[0].first().text)
+        assertEquals("Chewy Chocolate Chip Cookies", groups[1].first().text)
+        assertEquals(7, groups[0].size)
+        assertEquals(16, groups[1].size)
+    }
+
+    @Test
+    fun singleRecipePagesStayOneGroup() {
+        val labels = RegionLabeler.cueLabels(cardPancakes).map { it.kind!! }
+        val groups = RegionLabeler.splitRecipes(cardPancakes, labels)
+        assertEquals(1, groups.size)
+        assertEquals(cardPancakes.size, groups[0].size)
+    }
+
+    @Test
+    fun aWrappedTailIsNeverASecondTitle() {
+        val pages = listOf(
+            RegionBlock("Weeknight Chicken Stir-Fry", 60, 50, 585, 88),
+            RegionBlock(
+                "For the stir-fry, begin with 1 1/2 lbs chicken breast, sliced thin, " +
+                    "3 tablespoons soy sauce, 2 tablespoons cornstarch, 1/4 cup chicken broth.",
+                60, 105, 720, 240,
+            ),
+            RegionBlock("Toss the chicken with 1 tablespoon soy sauce and the cornstarch; rest 10 minutes.", 60, 250, 620, 300),
+            RegionBlock("Heat 1 tablespoon vegetable oil in a wok over high heat; sear chicken 4 minutes.", 60, 310, 705, 360),
+            RegionBlock("parchment.", 60, 370, 180, 390),
+            RegionBlock("Serve over rice.", 60, 400, 215, 420),
+        )
+        val labels = RegionLabeler.resolveLabels(pages, RegionLabeler.cueLabels(pages), null)
+        assertEquals(
+            "labels: " + pages.zip(labels) { b, k -> b.text.take(20) + "=" + k },
+            1,
+            labels.count { it == RegionKind.TITLE },
+        )
+    }
 }
