@@ -197,12 +197,19 @@ object OcrParser {
         // strands a 4-line fragment as the "left column" while the real two
         // columns scramble together. Score every wide gap and keep the split
         // that leaves two substantial side-by-side columns.
+        // A genuine gutter is also WIDE relative to the text: on a
+        // single-column cookbook card (Keith's stuffed mushrooms) the gap
+        // between an ingredient's quantity column and its wrapped text is
+        // 2-3 line heights, while a real gutter runs 10x. Reject gaps under
+        // 4 median line heights so one-column cards never split.
+        val heights = usable.map { (it.bottom - it.top).coerceAtLeast(1) }.sorted()
+        val medianH = heights[heights.size / 2].toDouble()
         var best: Pair<List<OcrLineBox>, List<OcrLineBox>>? = null
         var bestScore = 0
         var bestGap = 0.0
         for (i in 0 until starts.size - 1) {
             val gap = (starts[i + 1] - starts[i]).toDouble()
-            if (gap < span * 0.1) continue
+            if (gap < span * 0.1 || gap < medianH * 4) continue
             val split = (starts[i] + starts[i + 1]) / 2.0
             val leftCol = usable.filter { it.left < split }.sortedBy { it.top }
             val rightCol = usable.filter { it.left >= split }.sortedBy { it.top }
@@ -259,9 +266,34 @@ object OcrParser {
                 ?: SERVINGS_BEFORE_RE.find(text)?.groupValues?.get(1)?.toIntOrNull()
                 ?: 1
         val prep = parseTimeLine(text, PREP_RE)
+            ?: parseTimeLine(text, Regex("prep\\s*:\\s*(\\d+)\\s*(min(?:ute)?s?|hours?|hrs?|h)\\b", RegexOption.IGNORE_CASE))
         val cook = parseTimeLine(text, COOK_RE)
+            ?: parseTimeLine(text, Regex("(?:bake|cook|chill)\\s*:\\s*(\\d+)\\s*(min(?:ute)?s?|hours?|hrs?|h)\\b", RegexOption.IGNORE_CASE))
 
         var title: String? = null
+        // The title is the tallest text at the TOP of the card: with line
+        // boxes, take the tallest line in the top fifth of the page and
+        // relax the all-caps card-art rule for it (real cookbook titles are
+        // ALL CAPS; a stamp like "DELICIOUS" sits mid-card and is never the
+        // top zone's tallest line).
+        if (boxes.isNotEmpty()) {
+            val hs = boxes.map { (it.bottom - it.top).coerceAtLeast(1) }.sorted()
+            val medianH = hs[hs.size / 2]
+            val pageTop = boxes.minOf { it.top }
+            val pageBottom = boxes.maxOf { it.bottom }
+            val topZoneEnd = pageTop + (pageBottom - pageTop) / 5
+            val tall = boxes.filter { it.top <= topZoneEnd }
+                .sortedByDescending { it.bottom - it.top }
+                .firstOrNull { b ->
+                    val c = OcrLexicon.fixLine(b.text.trim())
+                    c.length in 3..90 && !c.contains("serves", ignoreCase = true) &&
+                        !LEADING_QTY_RE.containsMatchIn(c) && !LEADING_QTY_ALT_RE.containsMatchIn(c) &&
+                        !c.trimEnd().endsWith(":")
+                }
+            if (tall != null && (tall.bottom - tall.top) >= medianH * 3 / 2) {
+                title = OcrLexicon.fixLine(tall.text.trim())
+            }
+        }
         if (blocks.isNotEmpty()) {
             val cand = blocks.maxByOrNull { it.second }?.first?.let { OcrLexicon.fixLine(it.trim()) }
             if (!cand.isNullOrBlank() && cand.length <= 90 && !cand.contains("serves", ignoreCase = true) &&
@@ -275,7 +307,11 @@ object OcrParser {
             title = lines.firstOrNull {
                 !SERVINGS_RE.containsMatchIn(it) && !PREP_RE.containsMatchIn(it) && !COOK_RE.containsMatchIn(it) &&
                     !isNoise(it) && !LEADING_QTY_RE.containsMatchIn(it) &&
-                    !LEADING_QTY_ALT_RE.containsMatchIn(it) && !it.trimEnd().endsWith(":")
+                    !LEADING_QTY_ALT_RE.containsMatchIn(it) && !it.trimEnd().endsWith(":") &&
+                    // "PREP: 25 MINUTES BAKE: 8 MINUTES", "Oven 425": timing
+                    // and temperature notes, never the recipe title.
+                    !Regex("^(?:prep|bake|cook|chill|total|oven)\\b.*\\d", RegexOption.IGNORE_CASE)
+                        .containsMatchIn(it)
             }
         }
 
@@ -396,10 +432,11 @@ object OcrParser {
                             appendToSteps(steps, l)
                             lastWasStep = true
                         }
-                        isIngredientNoise(l) -> {}
                         // A lowercase tail with no amount straight after an
                         // open step is that step's continuation, not an
-                        // ingredient.
+                        // ingredient. Checked BEFORE isIngredientNoise: the
+                        // prose rules otherwise eat wrapped step tails
+                        // ("reserve caps. Chop enough stems to make 1 cup.").
                         lastWasStep &&
                             steps.isNotEmpty() &&
                             l.trim().firstOrNull()?.isUpperCase() != true &&
@@ -409,6 +446,7 @@ object OcrParser {
                             appendToSteps(steps, l)
                             lastWasStep = true
                         }
+                        isIngredientNoise(l) -> {}
                         isContinuation(l, ingredients.lastOrNull()) -> {
                             val prev = ingredients.last()
                             ingredients[ingredients.size - 1] = ParsedIngredient(
@@ -829,7 +867,14 @@ object OcrParser {
             "after", "about", "into", "over", "but", "at", "in", "on",
             "remaining", "optional", "reserved", "divided",
         )
-        if (isStepProse(text) && !(prevOpen && fragmentStart)) return
+        // The previous step being a real instruction ("...cook the chopped
+        // stems," / "Rinse and drain mushrooms. Remove stems;") with no
+        // sentence end makes a lowercase tail its continuation even when it
+        // reads like prose ("reserve caps. Chop enough stems to make 1
+        // cup."). Prose after prose ("creamy, delicious...") still drops.
+        val prevRealInstruction = prev != null &&
+            (hasStepVerb(prev.instructionText) || verbStart(prev.instructionText))
+        if (isStepProse(text) && !(prevOpen && (fragmentStart || prevRealInstruction))) return
         if (!startsNew && prev != null) {
             out[out.size - 1] = ParsedStep(
                 (prev.instructionText + " " + text).trim(),

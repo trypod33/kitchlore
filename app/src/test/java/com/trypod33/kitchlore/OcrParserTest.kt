@@ -203,4 +203,76 @@ class OcrParserTest {
         assertFalse("served-with leaked into steps: $stepText", stepText.contains("Honey buns"))
         assertFalse("tips leaked into steps: $stepText", stepText.contains("Leftover chicken"))
     }
+    // Keith's stuffed mushrooms cookbook card (Better Homes style): a
+    // single-column card with NO Ingredients header - the ingredient list
+    // sits under "PREP: 25 MINUTES BAKE: 8 MINUTES" and the numbered steps
+    // follow. The old parser split the card into fake columns (the gap
+    // between the quantity column and the wrapped text), threw away the
+    // wrapped tails of the numbered steps as prose ("reserve caps. Chop
+    // enough stems...", "green onions, and garlic in margarine or butter
+    // till"), and picked the title from body text. The tallest OCR line is
+    // the title, the height-vs-gap rule keeps one-column cards whole, and a
+    // lowercase tail of an open numbered step joins it.
+    @Test
+    fun stuffedMushroomsCookbookCardParses() {
+        fun b(text: String, l: Int, t: Int, r: Int, bo: Int) =
+            com.trypod33.kitchlore.data.OcrParser.OcrLineBox(text, l, t, r, bo)
+        val boxes = listOf(
+            b("STUFFED MUSHROOMS", 700, 40, 1850, 264),
+            b("PREP: 25 MINUTES BAKE: 8 MINUTES", 52, 267, 1426, 388),
+            b("Oven 425\u00B0", 1997, 393, 2491, 482),
+            b("24 large fresh mushrooms, 1\u00BD to 2 inches", 164, 496, 2420, 652),
+            b("in diameter", 481, 658, 1606, 772),
+            b("\u00BC cup sliced green onions (2)", 188, 802, 1788, 940),
+            b("1 clove garlic, minced", 187, 970, 1619, 1078),
+            b("\u00BC cup margarine or butter", 186, 1108, 1744, 1226),
+            b("\u2153 cup fine dry bread crumbs", 188, 1236, 1744, 1370),
+            b("\u00BD cup shredded cheddar or crumbled blue", 188, 1381, 2462, 1505),
+            b("cheese (2 ounces)", 473, 1529, 1410, 1637),
+            b("1. Rinse and drain mushrooms. Remove stems;", 46, 1815, 2471, 1930),
+            b("reserve caps. Chop enough stems to make 1 cup.", 37, 1965, 2429, 2089),
+            b("2. In a medium saucepan cook the chopped stems,", 33, 2099, 2469, 2230),
+            b("green onions, and garlic in margarine or butter till", 30, 2248, 2473, 2371),
+            b("tender. Stir in bread crumbs and cheese. Spoon", 29, 2389, 2474, 2498),
+            b("crumb mixture into mushroom caps. Arrange", 27, 2535, 2471, 2644),
+            b("mushrooms in a 15\u00D710\u00D71-inch baking pan. Bake in", 25, 2677, 2473, 2784),
+            b("a 425\u00B0 oven for 8 to 10 minutes or till heated", 23, 2824, 2473, 2927),
+            b("through. Makes 24 mushrooms.", 19, 2965, 1545, 3067),
+        )
+        val text = boxes.joinToString("\n") { it.text }
+        val parsed = OcrParser.parse(
+            text,
+            blocks = listOf(
+                "STUFFED MUSHROOMS" to 224,
+                "PREP: 25 MINUTES BAKE: 8 MINUTES" to 121,
+                "Oven 425\u00B0" to 89,
+                "24 large fresh mushrooms, 1\u00BD to 2 inches" to 156,
+            ),
+            boxes = boxes,
+        )
+
+        val ingText = parsed.ingredients.joinToString(" | ") { it.rawText.ifBlank { it.name } }
+        val stepText = parsed.steps.joinToString(" | ") { it.instructionText }
+
+        assertTrue("title wrong: ${parsed.title}", parsed.title.lowercase().contains("stuffed"))
+        assertTrue("servings wrong: ${parsed.baseServings}", parsed.baseServings == 24)
+        assertTrue("prep wrong: ${parsed.prepTimeMinutes}", parsed.prepTimeMinutes == 25)
+        assertTrue("bake wrong: ${parsed.cookTimeMinutes}", parsed.cookTimeMinutes == 8)
+        assertTrue("mushrooms missing: $ingText", ingText.contains("large fresh mushrooms"))
+        assertTrue("green onions missing: $ingText", ingText.contains("green onions"))
+        assertTrue("garlic missing: $ingText", ingText.contains("garlic"))
+        assertTrue("margarine missing: $ingText", ingText.contains("margarine"))
+        assertTrue("bread crumbs missing: $ingText", ingText.contains("bread crumbs"))
+        assertTrue("cheese missing: $ingText", ingText.contains("cheddar"))
+        assertFalse("step text leaked into ingredients: $ingText", ingText.contains("Rinse"))
+        assertFalse("step text leaked into ingredients: $ingText", ingText.contains("Arrange"))
+        assertFalse("title leaked into ingredients: $ingText", ingText.contains("STUFFED"))
+        assertTrue("expected 6 ingredients, got ${parsed.ingredients.size}: $ingText", parsed.ingredients.size == 6)
+        assertTrue("step 1 tail missing: $stepText", stepText.contains("reserve caps"))
+        assertTrue("step 1 tail missing: $stepText", stepText.contains("Chop enough stems"))
+        assertTrue("step 2 tail missing: $stepText", stepText.contains("green onions, and garlic"))
+        assertTrue("step 2 tail missing: $stepText", stepText.contains("Arrange mushrooms"))
+        assertTrue("step 2 tail missing: $stepText", stepText.contains("Bake in a 425"))
+        assertFalse("tips in steps: $stepText", stepText.contains("PREP:"))
+    }
 }
