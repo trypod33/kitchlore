@@ -18,6 +18,12 @@ interface IngredientDao {
     @Query("SELECT * FROM ingredients WHERE recipeId = :recipeId ORDER BY sortOrder ASC")
     fun getIngredientsForRecipe(recipeId: Long): Flow<List<Ingredient>>
 
+    @Query("SELECT * FROM ingredients WHERE recipeId = :recipeId ORDER BY sortOrder ASC")
+    suspend fun getIngredientsForRecipeOnce(recipeId: Long): List<Ingredient>
+
+    @Query("SELECT * FROM ingredients")
+    suspend fun getAllOnce(): List<Ingredient>
+
     @Query("DELETE FROM ingredients WHERE recipeId = :recipeId")
     suspend fun deleteAllForRecipe(recipeId: Long)
 }
