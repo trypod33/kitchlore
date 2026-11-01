@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -52,7 +53,9 @@ import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text as MlKitText
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.trypod33.kitchlore.data.OcrParser
 import com.trypod33.kitchlore.data.RegionBlock
@@ -62,6 +65,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import com.trypod33.kitchlore.data.RecipeLlm
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.withContext
 import com.trypod33.kitchlore.data.ParsedRecipe
 import com.trypod33.kitchlore.data.local.AppDatabase
@@ -110,6 +116,10 @@ fun ScanRoute(
             db.correctionRuleDao().getAllOnce().associate { it.garbled to it.replacement }
         }
     }
+    // How to read the page: auto tries the printed prep first and falls back
+    // to the handwriting prep when the read comes back thin; the other two
+    // force one prep when you already know what kind of page it is.
+    var ocrMode by remember { mutableStateOf("auto") }
 
     fun stage(recipe: ParsedRecipe, path: String?) {
         staged = staged + (recipe to path)
@@ -152,7 +162,7 @@ fun ScanRoute(
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             busy = true
-            runOcr(context, uri, rules) { recipes, path ->
+            runOcr(context, uri, rules, ocrMode) { recipes, path ->
                 busy = false
                 handleParsed(recipes, path)
             }
@@ -172,7 +182,7 @@ fun ScanRoute(
                 busy = false
                 return
             }
-            runOcr(context, uris[i], rules) { recipes, path ->
+            runOcr(context, uris[i], rules, ocrMode) { recipes, path ->
                 recipes.forEach { stage(it, path) }
                 next(i + 1)
             }
@@ -252,6 +262,32 @@ fun ScanRoute(
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
             )
+        }
+
+        if (parsed == null) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = ocrMode == "auto",
+                    enabled = !busy,
+                    onClick = { ocrMode = "auto" },
+                    label = { Text("Auto") },
+                )
+                FilterChip(
+                    selected = ocrMode == "print",
+                    enabled = !busy,
+                    onClick = { ocrMode = "print" },
+                    label = { Text("Printed") },
+                )
+                FilterChip(
+                    selected = ocrMode == "hand",
+                    enabled = !busy,
+                    onClick = { ocrMode = "hand" },
+                    label = { Text("Handwritten") },
+                )
+            }
         }
 
         when {
@@ -359,7 +395,7 @@ fun ScanRoute(
                             ContextCompat.getMainExecutor(context),
                             object : ImageCapture.OnImageSavedCallback {
                                 override fun onImageSaved(results: ImageCapture.OutputFileResults) {
-                                    runOcr(context, out, rules) { recipes, path ->
+                                    runOcr(context, out, rules, ocrMode) { recipes, path ->
                                         busy = false
                                         handleParsed(recipes, path)
                                     }
@@ -410,81 +446,128 @@ fun ScanRoute(
 }
 
 
+// One OCR pass over the page: recognizer, then the region labeler, then the
+// parser. Quality is judged by what the parser can actually use (ingredients
+// and steps out the other end), with recognizer confidence as the tiebreak.
+private class OcrRead(val recipes: List<ParsedRecipe>, val confidence: Float?)
+
+private fun readYield(r: OcrRead): Int =
+    r.recipes.sumOf { it.ingredients.size + it.steps.size }
+
+private fun betterOf(a: OcrRead, b: OcrRead): OcrRead {
+    val ya = readYield(a)
+    val yb = readYield(b)
+    if (ya != yb) return if (ya > yb) a else b
+    return if ((a.confidence ?: 0f) >= (b.confidence ?: 0f)) a else b
+}
+
+private fun goodEnough(r: OcrRead): Boolean {
+    if (readYield(r) < 4) return false
+    val c = r.confidence ?: return true
+    return c >= 0.6f
+}
+
+private suspend fun TextRecognizer.awaitRead(bmp: Bitmap): MlKitText =
+    suspendCancellableCoroutine { cont ->
+        process(InputImage.fromBitmap(bmp, 0))
+            .addOnSuccessListener { if (cont.isActive) cont.resume(it) }
+            .addOnFailureListener { if (cont.isActive) cont.resumeWithException(it) }
+    }
+
+// Camera scan and gallery photo import, both ending in the same OCR ->
+// parse -> review -> save flow as the Termux /scan route. Two reads per page
+// when needed: the printed prep first, and when that read comes back thin
+// (the usual tell of handwritten ink) a second pass over a handwriting-tuned
+// image, keeping whichever read the parser can use. The original photo is
+// kept with the recipe before any of this runs, so a page the machine
+// cannot read is still saved for the person typing it in.
 private fun runOcr(
     context: android.content.Context,
     image: Any,
     rules: Map<String, String>,
+    mode: String,
     onDone: (List<ParsedRecipe>, String?) -> Unit,
 ) {
-    val input = try {
-        when (image) {
-            is File -> loadPreppedBitmap(context, Uri.fromFile(image))?.let { InputImage.fromBitmap(it, 0) }
-            is Uri -> loadPreppedBitmap(context, image)?.let { InputImage.fromBitmap(it, 0) }
-            else -> null
-        }
-    } catch (t: Throwable) {
-        null
-    }
-    if (input == null) {
-        onDone(listOf(OcrParser.parse("", emptyList(), rules)), null)
-        return
-    }
-    val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    recognizer.process(input)
-        .addOnSuccessListener { visionText ->
-            val blocks = visionText.textBlocks.flatMap { block ->
-                block.lines.map { line -> line.text to (line.boundingBox?.height() ?: 0) }
+    CoroutineScope(Dispatchers.Default).launch {
+        var path: String? = null
+        try {
+            val uri = when (image) {
+                is File -> Uri.fromFile(image)
+                is Uri -> image
+                else -> null
             }
-            val boxes = visionText.textBlocks.flatMap { block ->
-                block.lines.mapNotNull { line ->
-                    val b = line.boundingBox ?: return@mapNotNull null
-                    OcrParser.OcrLineBox(line.text, b.left, b.top, b.right, b.bottom)
+            // Keep the photo even before we know whether we can read it.
+            if (uri != null) path = copyUriToPhotos(context, uri)
+            val upright = if (uri != null) loadImageUpright(context, uri) else null
+            if (upright == null) {
+                withContext(Dispatchers.Main) {
+                    onDone(listOf(OcrParser.parse("", emptyList(), rules)), path)
                 }
+                return@launch
             }
-            val regionBlocks = visionText.textBlocks.mapNotNull { block ->
-                val box = block.boundingBox ?: return@mapNotNull null
-                RegionBlock(block.text, box.left, box.top, box.right, box.bottom)
-            }.sortedWith(compareBy({ it.top }, { it.left }))
-            CoroutineScope(Dispatchers.Main.immediate).launch {
-                val labels = try {
-                    RegionLabeler.label(context, regionBlocks) { }
-                } catch (t: Throwable) {
-                    null
-                }
-                val path = when (image) {
-                    is File -> image.absolutePath
-                    is Uri -> copyUriToPhotos(context, image)
-                    else -> null
-                }
-                val recipes: List<ParsedRecipe> = labels?.let { ls ->
-                    RegionLabeler.splitRecipes(regionBlocks, ls).map { group ->
-                        val title = StringBuilder()
-                        val ing = StringBuilder()
-                        val steps = StringBuilder()
-                        for (b in group) when (ls[regionBlocks.indexOf(b)]) {
-                            RegionKind.TITLE -> title.append(b.text).append('\n')
-                            RegionKind.INGREDIENTS -> ing.append(b.text).append('\n')
-                            RegionKind.STEPS -> steps.append(b.text).append('\n')
-                            RegionKind.OTHER -> {}
-                        }
-                        OcrParser.parse(
-                            visionText.text, blocks, rules, boxes,
-                            regions = OcrParser.Regions(title.toString(), ing.toString(), steps.toString()),
-                        )
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val chosen = try {
+                suspend fun pass(bmp: Bitmap): OcrRead {
+                    val visionText = recognizer.awaitRead(bmp)
+                    val lines = visionText.textBlocks.flatMap { block -> block.lines }
+                    var confSum = 0f
+                    var confN = 0
+                    for (line in lines) line.confidence?.let { confSum += it; confN++ }
+                    val blocks = lines.map { line -> line.text to (line.boundingBox?.height() ?: 0) }
+                    val boxes = lines.mapNotNull { line ->
+                        val b = line.boundingBox ?: return@mapNotNull null
+                        OcrParser.OcrLineBox(line.text, b.left, b.top, b.right, b.bottom)
                     }
-                } ?: listOf(OcrParser.parse(visionText.text, blocks, rules, boxes))
-                onDone(recipes, path)
+                    val regionBlocks = visionText.textBlocks.mapNotNull { block ->
+                        val box = block.boundingBox ?: return@mapNotNull null
+                        RegionBlock(block.text, box.left, box.top, box.right, box.bottom)
+                    }.sortedWith(compareBy({ it.top }, { it.left }))
+                    val labels = try {
+                        RegionLabeler.label(context, regionBlocks) { }
+                    } catch (t: Throwable) {
+                        null
+                    }
+                    val recipes: List<ParsedRecipe> = labels?.let { ls ->
+                        RegionLabeler.splitRecipes(regionBlocks, ls).map { group ->
+                            val title = StringBuilder()
+                            val ing = StringBuilder()
+                            val steps = StringBuilder()
+                            for (b in group) when (ls[regionBlocks.indexOf(b)]) {
+                                RegionKind.TITLE -> title.append(b.text).append('\n')
+                                RegionKind.INGREDIENTS -> ing.append(b.text).append('\n')
+                                RegionKind.STEPS -> steps.append(b.text).append('\n')
+                                RegionKind.OTHER -> {}
+                            }
+                            OcrParser.parse(
+                                visionText.text, blocks, rules, boxes,
+                                regions = OcrParser.Regions(title.toString(), ing.toString(), steps.toString()),
+                            )
+                        }
+                    } ?: listOf(OcrParser.parse(visionText.text, blocks, rules, boxes))
+                    return OcrRead(recipes, if (confN > 0) confSum / confN else null)
+                }
+                val printed = pass(preppedForOcr(upright))
+                when {
+                    mode == "print" -> printed
+                    mode == "hand" -> betterOf(pass(preppedForHandwriting(upright)), printed)
+                    goodEnough(printed) -> printed
+                    else -> betterOf(printed, pass(preppedForHandwriting(upright)))
+                }
+            } finally {
+                runCatching { recognizer.close() }
+            }
+            withContext(Dispatchers.Main) { onDone(chosen.recipes, path) }
+        } catch (t: Throwable) {
+            withContext(Dispatchers.Main) {
+                onDone(listOf(OcrParser.parse("", emptyList(), rules)), path)
             }
         }
-        .addOnFailureListener {
-            onDone(listOf(OcrParser.parse("", emptyList(), rules)), null)
-        }
+    }
 }
 
-// The scanner garbles fraction glyphs (1/4, 1/3, 1/2) on dim phone photos;
-// loading the page full-size, boosting contrast and upscaling small captures
-// gives the recognizer a much cleaner image to read.
-private fun loadPreppedBitmap(context: android.content.Context, uri: Uri): Bitmap? { return try {
+// Load the page upright (EXIF applied); the two prep passes below each take
+// their own working copy from it.
+private fun loadImageUpright(context: android.content.Context, uri: Uri): Bitmap? { return try {
     val resolver = context.contentResolver
     val bmp = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
         ?: return null
@@ -496,16 +579,17 @@ private fun loadPreppedBitmap(context: android.content.Context, uri: Uri): Bitma
             else -> 0f
         }
     } ?: 0f
-    val upright = if (rotation != 0f)
+    if (rotation != 0f)
         Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rotation) }, true)
     else bmp
-    preppedForOcr(upright)
 } catch (t: Throwable) {
     null
 } }
 
-private fun preppedForOcr(src: Bitmap): Bitmap {
-    // keep the OCR workload sane, then upscale small captures so glyphs are legible
+// Shared start for both OCR preps: keep the OCR workload sane, upscale small
+// captures so glyphs are legible, then grayscale with a global contrast
+// stretch.
+private fun grayStretched(src: Bitmap): Bitmap {
     val cap = 2600
     val longest = maxOf(src.width, src.height)
     val capped = if (longest > cap) {
@@ -535,13 +619,24 @@ private fun preppedForOcr(src: Bitmap): Bitmap {
         val v = (((lum[i] - lo) * 255) / range).coerceIn(0, 255)
         px[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
     }
-    // Adaptive local contrast: on a dim phone shot (a card on a dark table)
-    // a global stretch is not enough, the shadow across one corner still
-    // swamps the glyphs there. Each pixel is contrasted against its own
-    // neighborhood's average instead, so shadowed areas read like bright
-    // ones and the fraction glyphs come out crisp.
-    val mapW = (w / 48).coerceAtLeast(1)
-    val mapH = (h / 48).coerceAtLeast(1)
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    out.setPixels(px, 0, w, 0, 0, w, h)
+    return out
+}
+
+// Adaptive local contrast: on a dim phone shot (a card on a dark table)
+// a global stretch is not enough, the shadow across one corner still
+// swamps the glyphs there. Each pixel is contrasted against its own
+// neighborhood's average instead, so shadowed areas read like bright
+// ones and the fraction glyphs come out crisp. Strength and cell count
+// are tunable per prep; the printed pass keeps the original settings.
+private fun adaptiveContrast(gray: Bitmap, strength: Int, cells: Int): Bitmap {
+    val w = gray.width
+    val h = gray.height
+    val px = IntArray(w * h)
+    gray.getPixels(px, 0, w, 0, 0, w, h)
+    val mapW = (w / cells).coerceAtLeast(1)
+    val mapH = (h / cells).coerceAtLeast(1)
     val small = IntArray(mapW * mapH)
     for (my in 0 until mapH) {
         val sy = my * h / mapH
@@ -586,7 +681,7 @@ private fun preppedForOcr(src: Bitmap): Bitmap {
     for (i in px.indices) {
         val v = px[i] and 0xFF
         val m = meanAt(i % w, i / w)
-        val nv = (((v - m) * 18) / 10 + m).coerceIn(0, 255)
+        val nv = (((v - m) * strength) / 10 + m).coerceIn(0, 255)
         adapted[i] = nv
         if (nv < lo2) lo2 = nv
         if (nv > hi2) hi2 = nv
@@ -599,6 +694,32 @@ private fun preppedForOcr(src: Bitmap): Bitmap {
     val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     out.setPixels(px, 0, w, 0, 0, w, h)
     return out
+}
+
+// The scanner garbles fraction glyphs (1/4, 1/3, 1/2) on dim phone photos;
+// local contrast boosting gives the recognizer a much cleaner page to read.
+private fun preppedForOcr(src: Bitmap): Bitmap =
+    adaptiveContrast(grayStretched(src), 18, 48)
+
+// Handwritten pages need a different touch: pen and pencil strokes are thin
+// and faint, often on yellowed paper under uneven light. Gamma > 1 darkens
+// the midtones so faint ink separates from the paper, then a stronger and
+// finer adaptive contrast runs so each stroke reads against its own patch
+// of background.
+private fun preppedForHandwriting(src: Bitmap): Bitmap {
+    val gray = grayStretched(src)
+    val w = gray.width
+    val h = gray.height
+    val px = IntArray(w * h)
+    gray.getPixels(px, 0, w, 0, 0, w, h)
+    for (i in px.indices) {
+        val v = px[i] and 0xFF
+        val nv = (255.0 * Math.pow(v / 255.0, 1.4)).toInt().coerceIn(0, 255)
+        px[i] = (0xFF shl 24) or (nv shl 16) or (nv shl 8) or nv
+    }
+    val darkened = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    darkened.setPixels(px, 0, w, 0, 0, w, h)
+    return adaptiveContrast(darkened, 26, 40)
 }
 
 private fun copyUriToPhotos(context: android.content.Context, uri: Uri): String? {

@@ -59,6 +59,7 @@ fun DocImportRoute(
     var status by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var parsed by remember { mutableStateOf<ParsedRecipe?>(null) }
+    var docPhotoPath by remember { mutableStateOf<String?>(null) }
 
     val openDoc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -66,7 +67,8 @@ fun DocImportRoute(
             error = null
             scope.launch {
                 try {
-                    val text = with2(context, uri) { s -> status = s }
+                    val (text, photo) = with2(context, uri) { s -> status = s }
+                    docPhotoPath = photo
                     val rules = withContext(Dispatchers.IO) {
                         db.correctionRuleDao().getAllOnce().associate { it.garbled to it.replacement }
                     }
@@ -96,7 +98,7 @@ fun DocImportRoute(
         ReviewImportScreen(
             db = db,
             parsed = p,
-            photoPath = null,
+            photoPath = docPhotoPath,
             sourceNote = "Imported from document",
             onSaved = onDone,
             onCancel = onBack,
@@ -122,29 +124,59 @@ fun DocImportRoute(
     }
 }
 
-private suspend fun with2(context: Context, uri: Uri, onStatus: (String) -> Unit): String =
+private suspend fun with2(context: Context, uri: Uri, onStatus: (String) -> Unit): Pair<String, String?> =
     kotlinx.coroutines.withContext(Dispatchers.IO) {
         extractFromUri(context, uri, onStatus)
     }
 
-private fun extractFromUri(context: Context, uri: Uri, onStatus: (String) -> Unit): String {
+private fun extractFromUri(context: Context, uri: Uri, onStatus: (String) -> Unit): Pair<String, String?> {
     val name = queryName(context, uri) ?: "document"
     val safeName = name.takeLast(80)
     val tmp = File(context.cacheDir, "import-$safeName")
     context.contentResolver.openInputStream(uri)?.use { ins ->
         tmp.outputStream().use { ins.copyTo(it) }
-    } ?: return ""
+    } ?: return "" to null
     val ext = tmp.extension.lowercase()
     if (ext == "pdf" || name.endsWith(".pdf", ignoreCase = true)) {
+        val photo = saveFirstPdfPage(tmp)
         val text = DocTextExtractor.extractPdfText(tmp)
         if (text.length < 40) {
             onStatus("Scanning the PDF pages")
             val ocrText = ocrPdfPages(tmp)
-            return ocrText.ifBlank { text }
+            return ocrText.ifBlank { text } to photo
         }
-        return text
+        return text to photo
     }
-    return DocTextExtractor.extract(tmp)
+    return DocTextExtractor.extract(tmp) to null
+}
+
+// Render the first PDF page as a JPG and keep it next to the recipe, so the
+// original page is one tap away when the parse guessed wrong.
+private fun saveFirstPdfPage(file: File): String? = try {
+    ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+        PdfRenderer(pfd).use { renderer ->
+            if (renderer.pageCount <= 0) null
+            else renderer.openPage(0).use { page ->
+                val scale = 2
+                val bmp = Bitmap.createBitmap(
+                    page.width * scale,
+                    page.height * scale,
+                    Bitmap.Config.ARGB_8888,
+                )
+                bmp.eraseColor(Color.WHITE)
+                val m = Matrix()
+                m.setScale(scale.toFloat(), scale.toFloat())
+                page.render(bmp, null, m, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+                val dir = File(file.parentFile, "photos").apply { mkdirs() }
+                val out = File(dir, "imported-page1-${System.currentTimeMillis()}.jpg")
+                out.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                bmp.recycle()
+                out.absolutePath
+            }
+        }
+    }
+} catch (t: Throwable) {
+    null
 }
 
 private fun ocrPdfPages(file: File): String {

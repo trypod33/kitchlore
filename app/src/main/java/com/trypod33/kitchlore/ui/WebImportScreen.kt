@@ -53,6 +53,9 @@ fun WebImportRoute(db: AppDatabase, initialUrl: String, onBack: () -> Unit, onOp
     var status by remember { mutableStateOf<String?>(null) }
     var showWebView by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
+    var dupCandidate by remember { mutableStateOf<com.trypod33.kitchlore.data.local.entity.Recipe?>(null) }
+    var dupParsed by remember { mutableStateOf<com.trypod33.kitchlore.data.ParsedWebRecipe?>(null) }
+    var dupUrl by remember { mutableStateOf("") }
 
     fun openInBrowser(target: String) {
         val u = target.trim()
@@ -88,12 +91,22 @@ fun WebImportRoute(db: AppDatabase, initialUrl: String, onBack: () -> Unit, onOp
                 showWebView = true
                 importing = false
             } else {
-                val id = insertWebRecipe(db, context, parsed, u)
-                if (id > 0) {
-                    onOpen(id)
-                } else {
-                    status = "Save failed, try again."
+                val dup = com.trypod33.kitchlore.data.DuplicateCheck.findDuplicate(
+                    db, parsed.title?.takeIf { it.isNotBlank() } ?: "",
+                )
+                if (dup != null) {
+                    dupCandidate = dup
+                    dupParsed = parsed
+                    dupUrl = u
                     importing = false
+                } else {
+                    val id = insertWebRecipe(db, context, parsed, u)
+                    if (id > 0) {
+                        onOpen(id)
+                    } else {
+                        status = "Save failed, try again."
+                        importing = false
+                    }
                 }
             }
         }
@@ -130,6 +143,42 @@ fun WebImportRoute(db: AppDatabase, initialUrl: String, onBack: () -> Unit, onOp
             ) { Text("Browser", maxLines = 1, softWrap = false) }
         }
         status?.let { Text(it, fontSize = 15.sp) }
+        dupCandidate?.let { dup ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = {
+                    dupCandidate = null
+                    dupParsed = null
+                },
+                title = { Text("Looks like you already have this") },
+                text = { Text("\"${dup.title}\" is already in your recipes and the new title is a close match. Save anyway?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val parsed = dupParsed
+                        val target = dupUrl
+                        dupCandidate = null
+                        dupParsed = null
+                        if (parsed != null) {
+                            importing = true
+                            status = "Saving..."
+                            scope.launch {
+                                val id = insertWebRecipe(db, context, parsed, target)
+                                if (id > 0) onOpen(id)
+                                else {
+                                    status = "Save failed, try again."
+                                    importing = false
+                                }
+                            }
+                        }
+                    }) { Text("Save anyway") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        dupCandidate = null
+                        dupParsed = null
+                    }) { Text("Cancel") }
+                },
+            )
+        }
         if (showWebView) {
             WebViewImportBlock(
                 url = url.trim(),

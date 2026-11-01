@@ -58,6 +58,7 @@ fun ReviewImportScreen(
 ) {
     val scope = rememberCoroutineScope()
     var photo by remember { mutableStateOf(photoPath) }
+    var pendingDuplicate by remember { mutableStateOf<com.trypod33.kitchlore.data.local.entity.Recipe?>(null) }
     var title by remember { mutableStateOf(parsed.title.ifBlank { "New recipe" }) }
     var servings by remember { mutableStateOf(parsed.baseServings.coerceAtLeast(1).toString()) }
     var ingredients by remember {
@@ -292,10 +293,34 @@ fun ReviewImportScreen(
         ) {
             Button(onClick = {
                 scope.launch {
-                    saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
-                    onSaved()
+                    val dup = com.trypod33.kitchlore.data.DuplicateCheck.findDuplicate(db, title)
+                    if (dup != null) {
+                        pendingDuplicate = dup
+                    } else {
+                        saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
+                        onSaved()
+                    }
                 }
             }) { Text("Save recipe") }
+            pendingDuplicate?.let { dup ->
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { pendingDuplicate = null },
+                    title = { Text("Looks like you already have this") },
+                    text = { Text("\"${dup.title}\" is already in your recipes and the new title is a close match. Save anyway?") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            pendingDuplicate = null
+                            scope.launch {
+                                saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
+                                onSaved()
+                            }
+                        }) { Text("Save anyway") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingDuplicate = null }) { Text("Cancel") }
+                    },
+                )
+            }
             TextButton(onClick = onCancel) { Text("Cancel") }
         }
     }

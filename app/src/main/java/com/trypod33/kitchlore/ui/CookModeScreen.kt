@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -56,11 +57,15 @@ fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, factor: Dou
     var idx by remember { mutableStateOf(0) }
     var secondsLeft by remember { mutableStateOf<Int?>(null) }
     var running by remember { mutableStateOf(false) }
+    // Timer picked from a duration chip in the step text, when the parser
+    // itself never recorded one for this step.
+    var overrideSeconds by remember { mutableStateOf<Int?>(null) }
     // Ingredients stay visible while you cook, the whole point of this screen.
     var showIngredients by remember { mutableStateOf(true) }
 
     LaunchedEffect(idx) {
         secondsLeft = steps.getOrNull(idx)?.timerSeconds
+        overrideSeconds = null
         running = false
     }
     LaunchedEffect(running) {
@@ -126,7 +131,25 @@ fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, factor: Dou
                 }
             }
         }
-        val total = step?.timerSeconds
+        // Durations hiding in the step text ("Bake 25 minutes", "Simmer for
+        // 2 hours") become tappable chips: one tap starts the countdown even
+        // when the parser never recorded a timer for this step.
+        val durations = remember(step?.instructionText) { parseStepDurations(step?.instructionText ?: "") }
+        if (durations.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                durations.forEach { (label, secs) ->
+                    AssistChip(
+                        onClick = {
+                            overrideSeconds = secs
+                            secondsLeft = secs
+                            running = true
+                        },
+                        label = { Text("Start $label") },
+                    )
+                }
+            }
+        }
+        val total = step?.timerSeconds ?: overrideSeconds
         if (total != null && total > 0) {
             val s = secondsLeft ?: total
             Text("${s / 60}:${(s % 60).toString().padStart(2, '0')}", fontSize = 44.sp, fontWeight = FontWeight.Bold)
@@ -164,4 +187,30 @@ private fun splitLongStep(text: String): List<String> {
     }
     if (cur.isNotBlank()) out.add(cur.trim())
     return if (out.size > 1) out else listOf(text)
+}
+
+// "Bake 25 minutes", "Simmer for 2 hours", "Rest 90 seconds": pull the
+// durations out of the step text so cook mode can offer them as tappable
+// timers. First three per step, capped at a day.
+private val durationRegex = Regex(
+    "(\\d+(?:[.,]\\d+)?)\\s*(hours?|hrs?|h|minutes?|mins?|min|seconds?|secs?)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+internal fun parseStepDurations(text: String): List<Pair<String, Int>> {
+    if (text.isBlank()) return emptyList()
+    val out = mutableListOf<Pair<String, Int>>()
+    for (m in durationRegex.findAll(text)) {
+        val n = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: continue
+        val unit = m.groupValues[2].lowercase()
+        val secs = when {
+            unit.startsWith("h") -> (n * 3600).toInt()
+            unit.startsWith("m") -> (n * 60).toInt()
+            else -> n.toInt()
+        }
+        if (secs < 10 || secs > 24 * 3600) continue
+        out.add("${m.groupValues[1]} ${unit.trimEnd('s')}" to secs)
+        if (out.size >= 3) break
+    }
+    return out
 }
