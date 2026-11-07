@@ -261,7 +261,7 @@ object RegionLabeler {
         // Only pages the cues cannot read reach the model.
         if (!RecipeLlm.hasModel(context)) return resolveLabels(blocks, cues, null)
         return try {
-            if (!RecipeLlm.ready) RecipeLlm.initEngine(context)
+            if (!RecipeLlm.ready && !RecipeLlm.ensureEngine(context)) return resolveLabels(blocks, cues, null)
             onStatus("AI is finding the recipe sections")
             val reply = RecipeLlm.classify(SYSTEM, buildPrompt(blocks)) ?: return resolveLabels(blocks, cues, null)
             resolveLabels(blocks, cues, parseLabels(reply, blocks))

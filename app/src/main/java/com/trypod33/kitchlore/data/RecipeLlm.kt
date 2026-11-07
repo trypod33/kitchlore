@@ -9,11 +9,13 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -29,6 +31,40 @@ object RecipeLlm {
     @Volatile
     var ready: Boolean = false
         private set
+
+    // After a wedged engine call, stop trusting the GPU backend and start the
+    // engine on CPU next time.
+    @Volatile private var preferCpu = false
+
+    // Deadlines for every AI step. Native engine calls can wedge without ever
+    // returning or throwing, and a coroutine timeout cannot preempt a blocked
+    // native call, so each step runs on its own thread under a hard deadline.
+    // The result is the same either way: the review always opens, with the
+    // AI-cleaned lines when the model cooperates and the raw read otherwise.
+    private const val ENGINE_INIT_TIMEOUT_MS = 90_000L
+    private const val LINE_TIMEOUT_MS = 45_000L
+    private const val CLASSIFY_TIMEOUT_MS = 60_000L
+    private const val MODEL_WAIT_MS = 180_000L
+
+    /**
+     * Runs block on a fresh watchdog thread with a hard deadline; null when it
+     * does not finish in time. A wedged native call keeps its thread, so every
+     * guarded call gets its own.
+     */
+    internal fun <T> guarded(timeoutMs: Long, block: () -> T): T? {
+        val pool = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "kitchlore-ai-watchdog").apply { isDaemon = true }
+        }
+        return try {
+            pool.submit(block).get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (t: Throwable) {
+            null
+        } finally {
+            pool.shutdown()
+        }
+    }
+
+    private class Box(val value: String?)
 
     fun modelFile(context: Context): File = File(context.filesDir, "kitchlore-smollm2-360m.litertlm")
 
@@ -67,31 +103,44 @@ object RecipeLlm {
     )
 
     /**
-     * Runs the AI cleanup over the suspect lines. Failures are thrown to the
-     * caller, which falls back to the deterministic parse.
+     * Runs the AI cleanup over the suspect lines. Every step is bounded, so
+     * the caller always gets a recipe back: the AI-cleaned one when the model
+     * cooperates, the deterministic parse otherwise.
      */
     suspend fun enhance(context: Context, recipe: ParsedRecipe, onStatus: (String) -> Unit): ParsedRecipe {
         val idxs = suspectIndices(recipe).toSet()
         if (idxs.isEmpty()) return recipe
         if (!hasModel(context)) {
-            ensureModel(context, onStatus)
+            onStatus("One-time AI model download starting (about 400 MB)")
+            val got = guarded(MODEL_WAIT_MS) { runBlocking { ensureModel(context, onStatus) } }
+            if (got == null || !hasModel(context)) {
+                onStatus("AI cleanup skipped: the model is not downloaded yet")
+                return recipe
+            }
         }
         if (!ready) {
             onStatus("Starting the on-device AI")
-            initEngine(context)
+            if (!ensureEngine(context)) {
+                onStatus("AI cleanup skipped: the model would not start")
+                return recipe
+            }
         }
         var announced = false
         val cleaned = recipe.ingredients.mapIndexed { i, ing ->
             if (i !in idxs) {
                 ing
             } else {
+                if (!ready) return recipe // the engine wedged and was torn down mid-pass
                 val raw = ing.rawText.ifBlank { ing.name }
                 if (!announced) {
                     onStatus("AI is reading the garbled lines")
                     announced = true
                 }
                 val fixed = cleanLine(raw)
-                if (fixed == null) ing else ParsedIngredient(name = fixed, rawText = raw, amount = null, unit = null)
+                if (fixed == null) {
+                    if (!ready) return recipe // wedged mid-pass: keep the raw read
+                    ing
+                } else ParsedIngredient(name = fixed, rawText = raw, amount = null, unit = null)
             }
         }
         return recipe.copy(ingredients = cleaned)
@@ -190,26 +239,38 @@ object RecipeLlm {
         dest
     }
 
-    suspend fun initEngine(context: Context) = withContext(Dispatchers.IO) {
-        if (ready) return@withContext
+    private fun teardownAfterWedge() {
+        preferCpu = true
+        try {
+            engine?.close()
+        } catch (_: Throwable) {
+        }
+        engine = null
+        ready = false
+    }
+
+    // Engine start: GPU first (faster inference), CPU fallback, and each start
+    // on its own watchdog thread so a hung backend cannot freeze the screen.
+    private fun initEngineBlocking(context: Context): Boolean {
+        if (ready) return true
         val f = modelFile(context)
-        val configs = listOf(
-            EngineConfig(modelPath = f.absolutePath, backend = Backend.GPU()),
-            EngineConfig(modelPath = f.absolutePath, backend = Backend.CPU()),
-        )
-        var last: Exception? = null
+        val gpu = EngineConfig(modelPath = f.absolutePath, backend = Backend.GPU())
+        val cpu = EngineConfig(modelPath = f.absolutePath, backend = Backend.CPU())
+        val configs = if (preferCpu) listOf(cpu, gpu) else listOf(gpu, cpu)
         for (c in configs) {
-            try {
-                engine = Engine(c).also { it.initialize() }
+            val started = guarded(ENGINE_INIT_TIMEOUT_MS) { Engine(c).also { it.initialize() } }
+            if (started != null) {
+                engine = started
                 ready = true
-                return@withContext
-            } catch (e: Exception) {
-                last = e
-                engine?.close()
-                engine = null
+                return true
             }
         }
-        throw IllegalStateException("Couldn't start the on-device model: ${last?.message}")
+        return false
+    }
+
+    /** Starts the engine if it is not running; false when it will not start. */
+    suspend fun ensureEngine(context: Context): Boolean = withContext(Dispatchers.IO) {
+        initEngineBlocking(context)
     }
 
     /**
@@ -223,41 +284,55 @@ object RecipeLlm {
      */
     suspend fun classify(system: String, prompt: String): String? = withContext(Dispatchers.IO) {
         val e = engine ?: return@withContext null
-        try {
-            val convo = e.createConversation(
-                ConversationConfig(
-                    systemInstruction = Contents.of(system),
-                    samplerConfig = SamplerConfig(topK = 40, topP = 0.9, temperature = 0.1),
-                ),
-            )
-            val sb = StringBuilder()
-            convo.sendMessageAsync(prompt).collect { sb.append(it.toString()) }
-            val out = sb.toString().trim()
-            if (out.isBlank() || out.length > 4000) null else out
-        } catch (t: Throwable) {
-            null
+        val box = guarded(CLASSIFY_TIMEOUT_MS) { Box(runBlocking { rawClassify(e, system, prompt) }) }
+        if (box == null) {
+            teardownAfterWedge() // a reply that never came means the engine is not to be trusted
+            return@withContext null
         }
+        box.value
+    }
+
+    private suspend fun rawClassify(e: Engine, system: String, prompt: String): String? = try {
+        val convo = e.createConversation(
+            ConversationConfig(
+                systemInstruction = Contents.of(system),
+                samplerConfig = SamplerConfig(topK = 40, topP = 0.9, temperature = 0.1),
+            ),
+        )
+        val sb = StringBuilder()
+        convo.sendMessageAsync(prompt).collect { sb.append(it.toString()) }
+        val out = sb.toString().trim()
+        if (out.isBlank() || out.length > 4000) null else out
+    } catch (t: Throwable) {
+        null
     }
 
     private suspend fun cleanLine(line: String): String? = withContext(Dispatchers.IO) {
         val e = engine ?: return@withContext null
-        try {
-            val convo = e.createConversation(
-                ConversationConfig(
-                    systemInstruction = Contents.of(SYSTEM),
-                    samplerConfig = SamplerConfig(topK = 40, topP = 0.9, temperature = 0.1),
-                ),
-            )
-            val sb = StringBuilder()
-            convo.sendMessageAsync(line).collect { sb.append(it.toString()) }
-            val out = sb.toString().trim().trim('"', '`')
-            val sane = out.isNotBlank() &&
-                out.length <= line.length + 40 &&
-                out.split(Regex("\\s+")).size <= 14 &&
-                OK_LINE_RE.containsMatchIn(out)
-            if (sane) out else null
-        } catch (t: Throwable) {
-            null
+        val box = guarded(LINE_TIMEOUT_MS) { Box(runBlocking { rawClean(e, line) }) }
+        if (box == null) {
+            teardownAfterWedge() // a reply that never came means the engine is not to be trusted
+            return@withContext null
         }
+        box.value
+    }
+
+    private suspend fun rawClean(e: Engine, line: String): String? = try {
+        val convo = e.createConversation(
+            ConversationConfig(
+                systemInstruction = Contents.of(SYSTEM),
+                samplerConfig = SamplerConfig(topK = 40, topP = 0.9, temperature = 0.1),
+            ),
+        )
+        val sb = StringBuilder()
+        convo.sendMessageAsync(line).collect { sb.append(it.toString()) }
+        val out = sb.toString().trim().trim('"', '`')
+        val sane = out.isNotBlank() &&
+            out.length <= line.length + 40 &&
+            out.split(Regex("\\s+")).size <= 14 &&
+            OK_LINE_RE.containsMatchIn(out)
+        if (sane) out else null
+    } catch (t: Throwable) {
+        null
     }
 }

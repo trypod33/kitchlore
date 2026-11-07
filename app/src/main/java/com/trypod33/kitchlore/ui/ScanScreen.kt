@@ -147,7 +147,7 @@ fun ScanRoute(
             } catch (t: Throwable) {
                 // The AI pass is optional; the deterministic parse still stands.
                 parsed = recipe to path
-                aiStatus = null
+                aiStatus = "AI cleanup skipped (${t.message ?: "error"})"
             }
         }
     }
@@ -259,8 +259,8 @@ fun ScanRoute(
         aiStatus?.let {
             Text(
                 it,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp),
+                fontSize = 15.sp,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
             )
         }
 
@@ -333,42 +333,50 @@ fun ScanRoute(
                             PreviewView(ctx).also { view ->
                                 providerFuture.addListener(
                                     {
-                                        val provider = providerFuture.get()
-                                        val cameraPreview =
-                                            androidx.camera.core.Preview.Builder().build()
-                                        cameraPreview.setSurfaceProvider(view.surfaceProvider)
-                                        val capture = ImageCapture.Builder()
-                                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                                            .build()
-                                        imageCapture = capture
-                                        provider.unbindAll()
-                                        val camera = provider.bindToLifecycle(
-                                            lifecycleOwner,
-                                            CameraSelector.DEFAULT_BACK_CAMERA,
-                                            cameraPreview,
-                                            capture,
-                                        )
-                                        cameraRef = camera
+                                        var camera: Camera? = null
+                                        try {
+                                            val provider = providerFuture.get()
+                                            val cameraPreview =
+                                                androidx.camera.core.Preview.Builder().build()
+                                            cameraPreview.setSurfaceProvider(view.surfaceProvider)
+                                            val capture = ImageCapture.Builder()
+                                                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                                                .build()
+                                            imageCapture = capture
+                                            provider.unbindAll()
+                                            camera = provider.bindToLifecycle(
+                                                lifecycleOwner,
+                                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                                cameraPreview,
+                                                capture,
+                                            )
+                                            cameraRef = camera
+                                        } catch (t: Throwable) {
+                                            imageCapture = null
+                                            error = "The camera didn't start (${t.message ?: "error"}); the document scan button still works"
+                                        }
                                         // Pinch to zoom: scale the current zoom ratio within the lens limits.
-                                        val zoomer = ScaleGestureDetector(
-                                            ctx,
-                                            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                                                override fun onScale(detector: ScaleGestureDetector): Boolean {
-                                                    val state = camera.cameraInfo.zoomState.value
-                                                    val next = ((state?.zoomRatio ?: 1f) * detector.scaleFactor)
-                                                        .coerceIn(
-                                                            state?.minZoomRatio ?: 1f,
-                                                            state?.maxZoomRatio ?: 1f,
-                                                        )
-                                                    camera.cameraControl.setZoomRatio(next)
-                                                    return true
-                                                }
-                                            },
-                                        )
-                                        view.setOnTouchListener { v, event ->
-                                            zoomer.onTouchEvent(event)
-                                            v.performClick()
-                                            true
+                                        camera?.let { cam ->
+                                            val zoomer = ScaleGestureDetector(
+                                                ctx,
+                                                object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                                                    override fun onScale(detector: ScaleGestureDetector): Boolean {
+                                                        val state = cam.cameraInfo.zoomState.value
+                                                        val next = ((state?.zoomRatio ?: 1f) * detector.scaleFactor)
+                                                            .coerceIn(
+                                                                state?.minZoomRatio ?: 1f,
+                                                                state?.maxZoomRatio ?: 1f,
+                                                            )
+                                                        cam.cameraControl.setZoomRatio(next)
+                                                        return true
+                                                    }
+                                                },
+                                            )
+                                            view.setOnTouchListener { v, event ->
+                                                zoomer.onTouchEvent(event)
+                                                v.performClick()
+                                                true
+                                            }
                                         }
                                     },
                                     ContextCompat.getMainExecutor(ctx),
@@ -387,10 +395,15 @@ fun ScanRoute(
                 ) { Text("Scan document (auto-crop)") }
                 Button(
                     onClick = {
+                        val capture = imageCapture
+                        if (capture == null) {
+                            error = "The camera hasn't started yet; give it a second and try again"
+                            return@Button
+                        }
                         busy = true
                         error = null
                         val out = File(context.cacheDir, "scan-${System.currentTimeMillis()}.jpg")
-                        imageCapture?.takePicture(
+                        capture.takePicture(
                             ImageCapture.OutputFileOptions.Builder(out).build(),
                             ContextCompat.getMainExecutor(context),
                             object : ImageCapture.OnImageSavedCallback {
