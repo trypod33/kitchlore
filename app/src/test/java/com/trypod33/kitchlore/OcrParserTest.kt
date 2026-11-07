@@ -719,4 +719,86 @@ class OcrParserTest {
         assertTrue(second.steps[0].instructionText.startsWith("Preheat"))
         assertTrue(second.steps.last().instructionText.contains("apart"))
     }
+
+    // Keith's dinner-rolls card (Nov 6 2026): printed two-column card with
+    // checkbox bullets, stacked fractions and circled step numbers. The
+    // recognizer read the checkboxes as "O", flattened the fractions into
+    // stray digits ("3½"->"34", "¼"->"4", "2¼ tsp"->"24 tsp", "3½"->"3h"),
+    // read a circled 4 as "A", and garbled the script title into
+    // "temanade". The parser dropped step 1's first line ("In a large
+    // bowl, dissolve the yeast" — "dissolve" was no known verb), split
+    // "active dry yeast" into its own ingredient, and printed the "O"s and
+    // raw digits as amounts.
+    @Test
+    fun printedCardCheckboxesAndFractions() {
+        val boxes = listOf(
+            box("temanade", 880, 60, 1320, 210),  // garbled script title
+            box("Ingredients", 150, 260, 420, 310),
+            box("O 34 cups all-purpose flour", 150, 330, 640, 375),
+            box("O packet (24 tsp)", 150, 385, 560, 430),
+            box("active dry yeast", 190, 435, 500, 480),
+            box("1 cup warm milk (110\u00B0F)", 150, 490, 620, 535),
+            box("O 4 cup sugar", 150, 545, 420, 590),
+            box("O 4 cup butter, melted", 150, 600, 540, 645),
+            box("O 1 large egg", 150, 655, 400, 700),
+            box("O 1 tsp salt", 150, 710, 380, 755),
+            box("Instructions", 830, 260, 1120, 310),
+            box("1 In a large bowl, dissolve the yeast", 830, 330, 1300, 375),
+            box("and sugar in the warm milk. Let sit 5 minutes until foamy.", 830, 380, 1250, 475),
+            box("2 Add melted butter, egg, and salt.", 830, 490, 1290, 535),
+            box("Stir in 3h cups flour add a", 830, 550, 1240, 595),
+            box("little more if needed) and mix", 830, 600, 1240, 645),
+            box("until a soft dough forms.", 830, 650, 1180, 695),
+            box("Knead the dough for 5-7", 830, 710, 1140, 755),
+            box("minutes until smooth.", 830, 760, 1120, 805),
+            box("A Place in a greased bowl,", 830, 820, 1230, 865),
+            box("cover, and let rise 1 hour, or", 830, 870, 1230, 915),
+            box("until doubled. and place in a", 830, 920, 1230, 965),
+            box("greased 9x13 pan.", 830, 970, 1100, 1015),
+            box("Cover and let rise 30-45", 830, 1030, 1170, 1075),
+            box("minutes.", 830, 1080, 980, 1125),
+            box("Bake at 350\u00B0F for 18-22", 830, 1140, 1210, 1185),
+            box("minutes, until golden brown.", 830, 1190, 1250, 1235),
+            box("Brush with melted butter", 830, 1250, 1170, 1295),
+            box("while warm.", 830, 1300, 1020, 1345),
+        )
+        val text = boxes.joinToString("\n") { it.text }
+        val r = OcrParser.parse(text, boxes = boxes)
+
+        // Title: the script garble is rejected, never "Ingredients" either.
+        assertTrue("title was: " + r.title, !r.title.contains("temanade"))
+        assertFalse(r.title.equals("Ingredients", ignoreCase = true))
+        assertFalse(r.title.contains("yeast"))
+
+        val ing = r.ingredients
+        assertEquals(7, ing.size)
+        assertEquals(3.5, ing[0].amount!!, 0.001)
+        assertEquals("cups", ing[0].unit)
+        assertEquals("all-purpose flour", ing[0].name)
+        assertEquals("packet", ing[1].unit)
+        assertTrue(ing[1].name.contains("active dry yeast"))
+        assertEquals(1.0, ing[2].amount!!, 0.001)
+        assertEquals(0.25, ing[3].amount!!, 0.001)
+        assertEquals("cup", ing[3].unit)
+        assertEquals(0.25, ing[4].amount!!, 0.001)
+        assertEquals(1.0, ing[5].amount!!, 0.001)
+        assertEquals(1.0, ing[6].amount!!, 0.001)
+        assertEquals("tsp", ing[6].unit)
+
+        val steps = r.steps.map { it.instructionText }
+        assertEquals(8, steps.size)
+        assertEquals(
+            "In a large bowl, dissolve the yeast and sugar in the warm milk. " +
+                "Let sit 5 minutes until foamy.",
+            steps[0],
+        )
+        assertEquals("Add melted butter, egg, and salt.", steps[1])
+        assertTrue(steps[2].startsWith("Stir in 3\u00BD cups flour"))
+        assertEquals("Knead the dough for 5-7 minutes until smooth.", steps[3])
+        assertTrue(steps[4].startsWith("Place in a greased bowl"))
+        assertFalse(steps[4].startsWith("A "))
+        assertEquals("Cover and let rise 30-45 minutes.", steps[5])
+        assertTrue(steps[6].startsWith("Bake at 350\u00B0F"))
+        assertEquals("Brush with melted butter while warm.", steps[7])
+    }
 }

@@ -11,6 +11,35 @@ package com.trypod33.kitchlore.data
 // has to be fixed once.
 object AmountFixer {
 
+    // Stacked fraction glyphs the recognizer flattens into stray digits:
+    // "3\u00BD cups" reads as "34 cups", "\u00BC cup sugar" as "4 cup sugar",
+    // "2\u00BC tsp" as "24 tsp", and "3\u00BD" as "3h" on the same card
+    // (Keith's dinner-rolls card, Nov 6 2026). A digit+4 glued to a measure
+    // is never a real two-digit amount (34 cups of flour is not a recipe),
+    // so the second digit is repaired to the fraction whose bottom numeral
+    // it came from: tsp/tbsp measures read \u00BC, cup measures read \u00BD
+    // (whole+\u00BD dominates cup quantities on home cards), and a bare "4"
+    // on a singular "cup" is the \u00BC that lost its top numeral. The raw
+    // text stays on the line for the reviewer, who fixes the rare card
+    // where the guess is wrong.
+    private val DIGIT_H_FRACTION_RE = Regex(
+        "(\\d)[hH](?=\\s*(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?)\\b)",
+    )
+    private val DIGIT4_SPOON_RE = Regex(
+        "(\\d)4(?=\\s*(?:tbsps?|tsps?|tablespoons?|teaspoons?)\\b)",
+    )
+    private val DIGIT4_CUP_RE = Regex("(\\d)4(?=\\s*cups?\\b)")
+    private val BARE4_CUP_RE = Regex("(^|\\s)4(\\s+cup\\b)")
+
+    /** Line-level fraction repairs, applied to ingredient and step text alike. */
+    fun fixFractions(line: String): String {
+        var s = DIGIT_H_FRACTION_RE.replace(line) { "${it.groupValues[1]}\u00BD" }
+        s = DIGIT4_SPOON_RE.replace(s) { "${it.groupValues[1]}\u00BC" }
+        s = DIGIT4_CUP_RE.replace(s) { "${it.groupValues[1]}\u00BD" }
+        s = BARE4_CUP_RE.replace(s) { "${it.groupValues[1]}\u00BC${it.groupValues[2]}" }
+        return s
+    }
+
     // "%" and "%%" garbles, with or without a whole-number part ("1%", "1%%").
     private val PERCENT_GARBLE_RE = Regex("^\\d*%+\\d*$")
     private val VEE_RE = Regex("^v[s2348a]$", RegexOption.IGNORE_CASE)

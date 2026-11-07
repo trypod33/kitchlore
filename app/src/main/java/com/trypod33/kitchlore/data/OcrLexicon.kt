@@ -694,8 +694,34 @@ private val BASE_WORDS = setOf(
     private fun applyPhraseFixes(s: String): String =
         PHRASE_FIXES.fold(s) { acc, p -> p.first.replace(acc, p.second) }
 
+    // Card-art checkboxes read as a stray letter: "☐ 3½ cups" comes
+    // back as "O 34 cups", so the checkbox rides in front of the quantity
+    // and the amount parser sees "O" where the number belongs. A leading
+    // one-character O/0/☐ token whose rest carries a digit or a measure
+    // word is the checkbox, never text; it is stripped before anything
+    // else looks at the line. ("Oatmeal Cookies" keeps its O: more than
+    // one character, no measurement following.)
+    private val CHECKBOX_TOKENS = setOf("O", "o", "0", "\u2610", "\u25CB")
+    private val CHECKBOX_REST_UNITS = setOf(
+        "cup", "cups", "tsp", "tsps", "tbsp", "tbsps", "tbs", "tablespoon", "tablespoons",
+        "teaspoon", "teaspoons", "packet", "packets", "stick", "sticks", "can", "cans",
+        "envelope", "envelopes", "oz", "ounce", "ounces", "lb", "lbs", "pound", "pounds",
+        "large", "small", "medium", "egg", "eggs", "clove", "cloves", "slice", "slices",
+    )
+
+    private fun stripLeadingCheckbox(s: String): String {
+        val parts = s.trim().split(Regex("\\s+"))
+        if (parts.size < 2 || parts[0] !in CHECKBOX_TOKENS) return s
+        val rest = parts.drop(1).joinToString(" ")
+        val firstWord = parts[1].trimEnd('.', ',').lowercase()
+        val looksMeasured = rest.any { it.isDigit() } || firstWord in CHECKBOX_REST_UNITS
+        return if (looksMeasured) rest else s
+    }
+
     fun fixLine(line: String): String {
-        var s = applyPhraseFixes(line)
+        var s = stripLeadingCheckbox(line.trim())
+        s = AmountFixer.fixFractions(s)
+        s = applyPhraseFixes(s)
         s = if (s.contains("0z") || s.contains("0Z"))
             Regex("\\b0[zZ]\\b").replace(s, "oz") else s
         if (s.length < MIN_LEN) return s

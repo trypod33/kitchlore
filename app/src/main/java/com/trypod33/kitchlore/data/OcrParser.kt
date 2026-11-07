@@ -58,7 +58,7 @@ object OcrParser {
         "sauté", "simmer", "boil", "place", "spread", "cover", "remove",
         "serve", "top", "drizzle", "season", "chop", "dice", "mince",
         "slice", "grease", "line", "knead", "marinate", "refrigerate",
-        "seal", "soften", "whip",
+        "seal", "soften", "whip", "dissolve",
         "pulse", "process", "whirl", "liquefy", "puree", "microwave", "blend",
         "steep", "strain", "toast", "zest", "juice",
         "transfer", "combine", "layer", "sprinkle", "melt", "brown",
@@ -139,6 +139,17 @@ object OcrParser {
         )
     }
 
+    // The decorative script on a card header garbles into a single
+    // lowercase non-word ("temanade" for "Dinner Rolls"): reject it as a
+    // title candidate. Titles are capitalized or multi-word; a lone
+    // lowercase word no lexicon knows is debris.
+    private fun isGarbleTitle(cand: String): Boolean {
+        val t = cand.trim().trimEnd(',', '.', '!', '?')
+        if (t.isEmpty() || t.contains(Regex("\\s"))) return false
+        if (t.any { it.isUpperCase() }) return false
+        return !OcrLexicon.isKnownWord(t) && t.length >= 4
+    }
+
     private val PROSE_LINE_RE = Regex(
         "^(?:you may|tip|tips|note|variation|make ahead|storage|to serve|serving suggestion|" +
             "store|stored|keeps?|sealed|airtight|wrap(?:ped)?|and|or|until|with|for|in|" +
@@ -155,7 +166,7 @@ object OcrParser {
     // A line that starts with an amount the scanner garbled: "h cup broth",
     // "V2 cup sugar", "Vs tsp salt", "1% cups flour", "3/4 cup milk".
     private val GARBLED_QTY_LINE_RE = Regex(
-        "^\\s*(?:[hvVy]\\s*\\d?\\s*)?(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|qts?|qts\\.|oz|ounces?|lbs?|pounds?|cloves?|slices?)\\b|^(?:Vs|V\\d|[Yy]\\d)\\b|^\\d+\\s*[/%%]\\s*\\d?|^[hVy]\\b",
+        "^\\s*(?:[hvVy]\\s*\\d?\\s*)?(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|qts?|qts\\.|oz|ounces?|lbs?|pounds?|cloves?|slices?|packets?|envelopes?|cans?|boxes?|jars?|bags?|bottles?|cartons?|tubes?|containers?|sticks?|bunches?|heads?|ears?|sheets?|strips?)\\b|^(?:Vs|V\\d|[Yy]\\d)\\b|^\\d+\\s*[/%%]\\s*\\d?|^[hVy]\\b",
         RegexOption.IGNORE_CASE,
     )
 
@@ -303,7 +314,8 @@ object OcrParser {
                     val c = OcrLexicon.fixLine(b.text.trim())
                     c.length in 3..90 && !c.contains("serves", ignoreCase = true) &&
                         !LEADING_QTY_RE.containsMatchIn(c) && !LEADING_QTY_ALT_RE.containsMatchIn(c) &&
-                        !c.trimEnd().endsWith(":") && !NUTRITION_RE.containsMatchIn(c)
+                        !c.trimEnd().endsWith(":") && !NUTRITION_RE.containsMatchIn(c) &&
+                        !isGarbleTitle(c)
                 }
             if (tall != null && (tall.bottom - tall.top) >= medianH * 5 / 4) {
                 title = OcrLexicon.fixLine(tall.text.trim())
@@ -313,7 +325,8 @@ object OcrParser {
             val cand = blocks.maxByOrNull { it.second }?.first?.let { OcrLexicon.fixLine(it.trim()) }
             if (!cand.isNullOrBlank() && cand.length <= 90 && !cand.contains("serves", ignoreCase = true) &&
                 !isNoise(cand) && !LEADING_QTY_RE.containsMatchIn(cand) &&
-                    !LEADING_QTY_ALT_RE.containsMatchIn(cand) && !cand.trimEnd().endsWith(":")
+                    !LEADING_QTY_ALT_RE.containsMatchIn(cand) && !cand.trimEnd().endsWith(":") &&
+                    !isGarbleTitle(cand)
             ) {
                 title = cand
             }
@@ -323,6 +336,12 @@ object OcrParser {
                 !SERVINGS_RE.containsMatchIn(it) && !PREP_RE.containsMatchIn(it) && !COOK_RE.containsMatchIn(it) &&
                     !isNoise(it) && !LEADING_QTY_RE.containsMatchIn(it) &&
                     !LEADING_QTY_ALT_RE.containsMatchIn(it) && !it.trimEnd().endsWith(":") &&
+                    !isGarbleTitle(it) &&
+                    // Section headers and measurement lines are body text,
+                    // never the title, and a title starts with a capital
+                    // ("active dry yeast" is an ingredient, not a name).
+                    !isIngHeader(it) && !isStepHeader(it) && !isMeasurementLine(it) &&
+                    it.firstOrNull()?.isUpperCase() == true &&
                     // "PREP: 25 MINUTES BAKE: 8 MINUTES", "Oven 425": timing
                     // and temperature notes, never the recipe title.
                     !Regex("^(?:prep|bake|cook|chill|total|oven)\\b.*\\d", RegexOption.IGNORE_CASE)
@@ -590,6 +609,18 @@ object OcrParser {
                     if (b != null) {
                         amount = b
                         idx += 2
+                    }
+                }
+                // "3 1/2 cups" with the fraction as its own token (the spaced
+                // form of an "h" garble): add it to the whole number the way
+                // the mixed case above does.
+                if (idx < tokens.size && amount != null &&
+                    Regex("^\\d+/\\d+$").matches(tokens[idx])
+                ) {
+                    val b = parseAmount(tokens[idx])
+                    if (b != null) {
+                        amount = amount!! + b
+                        idx += 1
                     }
                 }
                 // "1/4 to 1/2 cup": a range keeps the first amount, and both
@@ -926,6 +957,12 @@ object OcrParser {
 
     private fun stripStepPrefix(line: String): String {
         var s = line.trim()
+        // A circled step number misread as a lone capital ("A Place in a
+        // greased bowl" for step 4): a single capital followed by a step
+        // verb is the badge, never an article, so it goes. A real article
+        // survives ("A dash of salt": "dash" is no step verb).
+        val loneCap = Regex("^([A-Z])\\s+(\\S.*)$").find(s)
+        if (loneCap != null && verbStart(loneCap.groupValues[2])) s = loneCap.groupValues[2]
         // "10 minutes. Meanwhile..." opens with a duration, not a step
         // number: the number is prose, never stripped.
         if (!DURATION_LED_RE.containsMatchIn(s)) s = s.replace(NUM_PREFIX_RE, "")
@@ -941,7 +978,7 @@ object OcrParser {
         "trim", "peel", "parboil", "reduce", "toast", "break", "pare",
         "add", "heat", "cook", "cut", "slice", "chop", "blend", "shape", "fill", "place",
         "arrange", "meanwhile", "preheat", "spray", "grease", "brush", "press", "pat",
-        "dip", "coat", "toss", "wait", "let", "salt",
+        "dip", "coat", "toss", "wait", "let", "salt", "dissolve",
     )
 
     private val SENTENCE_END_RE = Regex("[.!?]$")
