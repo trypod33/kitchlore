@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +58,7 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
     var stepDrafts by remember { mutableStateOf(listOf(DraftStep(""))) }
     var photoPath by remember { mutableStateOf<String?>(null) }
     var loaded by remember { mutableStateOf(isNew) }
+    var saveError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(recipeId) {
         if (!isNew) {
@@ -199,15 +201,30 @@ fun EditRecipeScreen(db: AppDatabase, recipeId: Long, isNew: Boolean, onDone: ()
                     ) { Text(if (active) "$t \u2713" else t, fontSize = 13.sp, maxLines = 1) }
                 }
             }
+            saveError?.let {
+                Text(
+                    "Save failed: $it",
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 13.sp,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                )
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = onCancel) { Text("Cancel") }
                 Button(onClick = {
+                    // Navigate only after the write lands: firing onDone()
+                    // first cancelled this scope mid-save and silently dropped
+                    // the recipe. A failed save stays here with the reason.
                     scope.launch {
-                        withContext(Dispatchers.IO) {
-                            saveRecipe(db, recipeId, isNew, title, servings, prep, cook, notes, tags, photoPath, ingDrafts, stepDrafts)
+                        try {
+                            withContext(Dispatchers.IO) {
+                                saveRecipe(db, recipeId, isNew, title, servings, prep, cook, notes, tags, photoPath, ingDrafts, stepDrafts)
+                            }
+                            onDone()
+                        } catch (t: Throwable) {
+                            saveError = t.message ?: t.toString()
                         }
                     }
-                    onDone()
                 }) { Text("Save") }
             }
         }

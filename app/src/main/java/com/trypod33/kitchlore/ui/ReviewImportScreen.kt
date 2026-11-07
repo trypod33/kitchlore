@@ -59,6 +59,7 @@ fun ReviewImportScreen(
     val scope = rememberCoroutineScope()
     var photo by remember { mutableStateOf(photoPath) }
     var pendingDuplicate by remember { mutableStateOf<com.trypod33.kitchlore.data.local.entity.Recipe?>(null) }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var title by remember { mutableStateOf(parsed.title.ifBlank { "New recipe" }) }
     var servings by remember { mutableStateOf(parsed.baseServings.coerceAtLeast(1).toString()) }
     var ingredients by remember {
@@ -286,19 +287,32 @@ fun ReviewImportScreen(
             Text("Add step")
         }
 
+        saveError?.let {
+            Text(
+                "Save failed: $it",
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
         Row(
             Modifier.fillMaxWidth().padding(top = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Button(onClick = {
+                // A throw inside here used to kill the coroutine before
+                // onSaved(), leaving the reviewer stuck with no sign of why.
                 scope.launch {
-                    val dup = com.trypod33.kitchlore.data.DuplicateCheck.findDuplicate(db, title)
-                    if (dup != null) {
-                        pendingDuplicate = dup
-                    } else {
-                        saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
-                        onSaved()
+                    try {
+                        val dup = com.trypod33.kitchlore.data.DuplicateCheck.findDuplicate(db, title)
+                        if (dup != null) {
+                            pendingDuplicate = dup
+                        } else {
+                            saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
+                            onSaved()
+                        }
+                    } catch (t: Throwable) {
+                        saveError = t.message ?: t.toString()
                     }
                 }
             }) { Text("Save recipe") }
@@ -311,8 +325,12 @@ fun ReviewImportScreen(
                         TextButton(onClick = {
                             pendingDuplicate = null
                             scope.launch {
-                                saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
-                                onSaved()
+                                try {
+                                    saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
+                                    onSaved()
+                                } catch (t: Throwable) {
+                                    saveError = t.message ?: t.toString()
+                                }
                             }
                         }) { Text("Save anyway") }
                     },
