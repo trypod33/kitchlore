@@ -61,10 +61,16 @@ import com.trypod33.kitchlore.data.OcrParser
 import com.trypod33.kitchlore.data.RegionBlock
 import com.trypod33.kitchlore.data.RegionKind
 import com.trypod33.kitchlore.data.RegionLabeler
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withTimeout
 import com.trypod33.kitchlore.data.RecipeLlm
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -100,6 +106,10 @@ fun ScanRoute(
     // The AI-skip reason that should still be visible on the review screen.
     var aiNote by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // The pass currently running, so the Stop button can cancel it instead of
+    // leaving the screen wedged with no way out.
+    var reviewJob by remember { mutableStateOf<Job?>(null) }
+    var ocrJob by remember { mutableStateOf<Job?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var parsed by remember { mutableStateOf<Pair<ParsedRecipe, String?>?>(null) }
     // Multi-photo recipes: each capture lands here, and the reviewer gets
@@ -147,15 +157,29 @@ fun ScanRoute(
 
     fun enhance(recipe: ParsedRecipe, path: String?) {
         aiNote = null
-        scope.launch {
+        reviewJob = scope.launch {
             try {
-                val fixed = RecipeLlm.enhance(context, recipe) { st ->
-                    aiStatus = st.ifBlank { null }
-                    if (st.startsWith("AI cleanup skipped")) aiNote = st
+                // A hard cap on the whole pass: however badly the engine
+                // behaves, the review screen opens within a few minutes,
+                // with the raw read when the AI pass does not finish.
+                val fixed = withTimeout(REVIEW_TOTAL_MS) {
+                    RecipeLlm.enhance(context, recipe) { st ->
+                        aiStatus = st.ifBlank { null }
+                        if (st.startsWith("AI cleanup skipped")) aiNote = st
+                    }
                 }
                 parsed = fixed to path
                 aiStatus = null
                 busy = false
+            } catch (t: CancellationException) {
+                busy = false
+                aiStatus = null
+                if (t is TimeoutCancellationException && currentCoroutineContext().isActive) {
+                    // The cap fired, not the user's Stop: open with the raw read.
+                    parsed = recipe to path
+                    aiNote = "AI cleanup skipped (timed out); keeping the raw read"
+                }
+                // Otherwise this is the Stop button; the pages stay queued.
             } catch (t: Throwable) {
                 busy = false
                 // The AI pass is optional; the deterministic parse still stands.
@@ -185,7 +209,7 @@ fun ScanRoute(
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             busy = true
-            runOcr(context, uri, rules, ocrMode) { recipes, path ->
+            ocrJob = runOcr(context, uri, rules, ocrMode, runner = scope) { recipes, path ->
                 busy = false
                 handleParsed(recipes, path)
             }
@@ -205,7 +229,7 @@ fun ScanRoute(
                 busy = false
                 return
             }
-            runOcr(context, uris[i], rules, ocrMode) { recipes, path ->
+            ocrJob = runOcr(context, uris[i], rules, ocrMode, runner = scope) { recipes, path ->
                 recipes.forEach { stage(it, path) }
                 next(i + 1)
             }
@@ -442,7 +466,7 @@ fun ScanRoute(
                             ContextCompat.getMainExecutor(context),
                             object : ImageCapture.OnImageSavedCallback {
                                 override fun onImageSaved(results: ImageCapture.OutputFileResults) {
-                                    runOcr(context, out, rules, ocrMode) { recipes, path ->
+                                    ocrJob = runOcr(context, out, rules, ocrMode, runner = scope) { recipes, path ->
                                         busy = false
                                         handleParsed(recipes, path)
                                     }
@@ -484,6 +508,13 @@ fun ScanRoute(
             ) {
                 CircularProgressIndicator()
                 Text("Reading the page...", modifier = Modifier.padding(top = 8.dp))
+                TextButton(onClick = {
+                    ocrJob?.cancel()
+                    reviewJob?.cancel()
+                    busy = false
+                    aiStatus = null
+                    error = "Stopped. Your pages are still queued; tap Review recipe when you're ready."
+                }) { Text("Stop") }
             }
         }
         error?.let {
@@ -529,14 +560,19 @@ private suspend fun TextRecognizer.awaitRead(bmp: Bitmap): MlKitText =
 // image, keeping whichever read the parser can use. The original photo is
 // kept with the recipe before any of this runs, so a page the machine
 // cannot read is still saved for the person typing it in.
+// Whole-pass ceiling for the AI cleanup; the review screen always opens
+// inside this window, raw when the model cannot keep up.
+private const val REVIEW_TOTAL_MS = 300_000L
+
 private fun runOcr(
     context: android.content.Context,
     image: Any,
     rules: Map<String, String>,
     mode: String,
+    runner: CoroutineScope? = null,
     onDone: (List<ParsedRecipe>, String?) -> Unit,
-) {
-    CoroutineScope(Dispatchers.Default).launch {
+): Job {
+    val job = (runner ?: CoroutineScope(Dispatchers.Default)).launch {
         var path: String? = null
         try {
             val uri = when (image) {
@@ -611,6 +647,7 @@ private fun runOcr(
             }
         }
     }
+    return job
 }
 
 // Load the page upright (EXIF applied); the two prep passes below each take

@@ -125,20 +125,18 @@ object RecipeLlm {
                 return recipe
             }
         }
-        var announced = false
+        var lineNo = 0
         val cleaned = recipe.ingredients.mapIndexed { i, ing ->
             if (i !in idxs) {
                 ing
             } else {
+                lineNo++
                 if (!ready) {
                     onStatus("AI cleanup skipped (engine wedged); keeping the raw read")
                     return recipe
                 } // the engine wedged and was torn down mid-pass
                 val raw = ing.rawText.ifBlank { ing.name }
-                if (!announced) {
-                    onStatus("AI is reading the garbled lines")
-                    announced = true
-                }
+                onStatus("Cleaning garbled line $lineNo of ${idxs.size}")
                 val fixed = cleanLine(raw)
                 if (fixed == null) {
                     if (!ready) {
