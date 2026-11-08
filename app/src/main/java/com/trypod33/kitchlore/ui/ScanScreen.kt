@@ -155,7 +155,9 @@ fun ScanRoute(
                 }
                 parsed = fixed to path
                 aiStatus = null
+                busy = false
             } catch (t: Throwable) {
+                busy = false
                 // The AI pass is optional; the deterministic parse still stands.
                 parsed = recipe to path
                 aiStatus = "AI cleanup skipped (${t.message ?: "error"})"
@@ -166,8 +168,17 @@ fun ScanRoute(
 
     fun reviewStaged() {
         if (staged.isEmpty()) return
-        val merged = mergeRecipes(staged.map { it.first })
-        enhance(merged, staged.first().second)
+        busy = true
+        error = null
+        aiStatus = "Reviewing ${if (staged.size == 1) "1 page" else "${staged.size} pages"}..."
+        try {
+            val merged = mergeRecipes(staged.map { it.first })
+            enhance(merged, staged.first().second)
+        } catch (t: Throwable) {
+            busy = false
+            aiStatus = null
+            error = "Couldn't combine the pages (${t.message ?: "error"}); try reviewing one page at a time"
+        }
     }
 
 
@@ -348,6 +359,11 @@ fun ScanRoute(
                     AndroidView(
                         factory = { ctx ->
                             PreviewView(ctx).also { view ->
+                                // TextureView, not the SurfaceView default:
+                                // a SurfaceView can paint over sibling views
+                                // (the mode chips and even the header) on
+                                // some devices.
+                                view.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                                 providerFuture.addListener(
                                     {
                                         var camera: Camera? = null
