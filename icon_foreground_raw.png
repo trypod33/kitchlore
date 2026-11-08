@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?><Error><Code>SignatureDoesNotMatch</Code><Message>Access denied.</Message><Details>The request signature we calculated does not match the signature you provided. Check your Google secret key and signing method.</Details><StringToSign>GOOG4-RSA-SHA256
+20261108T062531Z
+20261108/auto/storage/goog4_request
+efb1c608c0f3afd89e95feb17d8743419b57401495b001d4bc0e1207a17d42f8</StringToSign><CanonicalRequest>GET
+/wajo-ai-agentnet-uploads-nam4/users/dca119cb-d66c-487f-994d-4802a64551a5/sessions/d6eb7c0b-537e-4928-a803-a7cac46b0927/ba81a2a5-19d8-41ce-9c3a-ac05c4272529/android-adaptive-app-icon-foreground-art-flat-modern-vector-style-square-canvas.png
+X-Goog-Algorithm=GOOG4-RSA-SHA256&amp;X-Goog-Credential=agentnet-runtime%40wajo-ai.iam.gserviceaccount.com%2F20261108%2Fauto%2Fstorage%2Fgoog4_request&amp;X-Goog-Date=20261108T062531Z&amp;X-Goog-Expires=86399&amp;X-Goog-SignedHeaders=host&amp;response-content-type=image%2Fpng
+host:storage.googleapis.com
+
+host
+UNSIGNED-PAYLOAD</CanonicalRequest></Error>

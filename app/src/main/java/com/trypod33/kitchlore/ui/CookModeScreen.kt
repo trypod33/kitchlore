@@ -32,11 +32,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.app.Activity
+import android.speech.tts.TextToSpeech
+import android.view.WindowManager
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Ingredient
 import com.trypod33.kitchlore.data.local.entity.Recipe
 import com.trypod33.kitchlore.data.local.entity.Step
 import kotlinx.coroutines.delay
+import java.util.Locale
 
 @Composable
 fun CookModeRoute(db: AppDatabase, recipeId: Long, onBack: () -> Unit) {
@@ -62,6 +68,46 @@ fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, factor: Dou
     var overrideSeconds by remember { mutableStateOf<Int?>(null) }
     // Ingredients stay visible while you cook, the whole point of this screen.
     var showIngredients by remember { mutableStateOf(true) }
+
+    // The screen stays awake while you cook: hands are busy, nobody taps to
+    // keep the backlight on.
+    val context = LocalContext.current
+    DisposableEffect(Unit) {
+        (context as? Activity)?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            (context as? Activity)?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+    // Read-aloud rides on the device's own TTS engine, same as the reader
+    // apps: no cloud voice, no keys, nothing leaves the phone.
+    var speakReady by remember { mutableStateOf(false) }
+    var readAloud by remember { mutableStateOf(false) }
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    DisposableEffect(context) {
+        val holder = arrayOfNulls<TextToSpeech>(1)
+        val engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                speakReady = true
+                holder[0]?.let { it.setLanguage(Locale.getDefault()) }
+            }
+        }
+        holder[0] = engine
+        tts = engine
+        onDispose {
+            engine.stop()
+            engine.shutdown()
+        }
+    }
+    fun speak(text: String) {
+        if (!readAloud || !speakReady) return
+        val engine = tts ?: return
+        engine.stop()
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "kitchlore-step")
+    }
+    LaunchedEffect(idx, readAloud) {
+        val text = steps.getOrNull(idx)?.instructionText?.trim()
+        if (!text.isNullOrBlank()) speak(text)
+    }
 
     LaunchedEffect(idx) {
         secondsLeft = steps.getOrNull(idx)?.timerSeconds
@@ -89,6 +135,29 @@ fun CookModeScreen(steps: List<Step>, ingredients: List<Ingredient>, factor: Dou
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("Back") }
             Text("Step ${idx + 1} of ${steps.size}", fontSize = 16.sp)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    readAloud = !readAloud
+                    if (readAloud) {
+                        val text = steps.getOrNull(idx)?.instructionText?.trim()
+                        if (!text.isNullOrBlank()) speak(text)
+                    } else tts?.stop()
+                },
+                enabled = speakReady,
+            ) {
+                Text(if (readAloud) "Read aloud: on" else "Read aloud: off", maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = {
+                    val text = steps.getOrNull(idx)?.instructionText?.trim()
+                    if (!text.isNullOrBlank()) speak(text)
+                },
+                enabled = speakReady && readAloud,
+            ) {
+                Text("Repeat", maxLines = 1)
+            }
         }
         if (ingredients.isNotEmpty()) {
             Surface(
