@@ -1,12 +1,9 @@
 package com.trypod33.kitchlore.sync
 
 import android.content.Context
-import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
-import com.google.api.client.http.FileContent
-import com.google.api.client.json.gson.GsonFactory
-import com.google.api.services.drive.Drive
-import com.google.api.services.drive.DriveScopes
-import com.google.api.client.http.javanet.NetHttpTransport
+import android.content.Intent
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Ingredient
 import com.trypod33.kitchlore.data.local.entity.Recipe
@@ -16,122 +13,119 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.util.Collections
+import java.io.IOException
 
-// Two-way sync of the Room library with the Kitchlore/ folder on the user's
-// Google Drive, mirroring the Termux drive_sync.py role: the JSON library file
-// is the record, photos ride along in the same folder.
+// Two-way sync of the Room library with a folder the user picks in the system
+// file picker (a Google Drive folder works through the Drive app). The JSON
+// library file is the record, photos ride along in the same folder. No Google
+// account APIs: the folder pick itself grants lasting read/write access, so
+// there is nothing to sign in to and no OAuth client to register.
 
-object DriveSyncManager {
+object FolderSyncManager {
 
-    const val FOLDER_NAME = "Kitchlore"
-    const val JSON_NAME = "kitchlore-library.json"
+    const val JSON_STEM = "kitchlore-library"
+    const val FOLDER_HINT = "Kitchlore"
 
-    private const val PREFS = "kitchlore"
-    private const val KEY_ACCOUNT = "drive_account"
+    private const val PREFS = "kitchlore_sync"
+    private const val KEY_FOLDER = "folder_uri"
 
-    fun hasAccount(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_ACCOUNT, null) != null
+    fun hasFolder(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_FOLDER, null) != null
 
-    fun saveAccount(context: Context, name: String?) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString(KEY_ACCOUNT, name).apply()
-    }
-
-    fun credential(context: Context): GoogleAccountCredential {
-        val cred = GoogleAccountCredential.usingOAuth2(
-            context,
-            Collections.singletonList(DriveScopes.DRIVE_FILE),
+    fun saveFolder(context: Context, uri: Uri) {
+        context.contentResolver.takePersistableUriPermission(
+            uri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
         )
-        cred.selectedAccountName =
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_ACCOUNT, null)
-        return cred
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY_FOLDER, uri.toString()).apply()
     }
-
-    private fun drive(context: Context): Drive =
-        Drive.Builder(
-            NetHttpTransport(),
-            GsonFactory.getDefaultInstance(),
-            credential(context),
-        ).setApplicationName("Kitchlore").build()
 
     suspend fun sync(context: Context, db: AppDatabase, onProgress: (String) -> Unit = {}): String =
         withContext(Dispatchers.IO) {
-            val d = drive(context)
-            val folderId = findFolder(d) ?: createFolder(d)
-            importFrom(d, folderId, context, db, onProgress)
-            exportTo(d, folderId, context, db, onProgress)
-            "Library synced with Drive"
+            val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_FOLDER, null) ?: throw IOException("No folder chosen yet")
+            val folder = try {
+                DocumentFile.fromTreeUri(context, Uri.parse(raw))
+            } catch (t: Throwable) {
+                null
+            }
+            if (folder == null || !folder.exists()) {
+                throw IOException("The picked folder is no longer available; tap Sync and choose it again")
+            }
+            val imported = importFrom(folder, context, db, onProgress)
+            val count = exportTo(folder, context, db, onProgress)
+            if (imported > 0) {
+                "Library synced: pulled $imported from the other device, $count backed up"
+            } else {
+                "Library synced: $count recipes backed up"
+            }
         }
 
-    private fun findFolder(d: Drive): String? {
-        val result = d.files().list()
-            .setQ("name='$FOLDER_NAME' and mimeType='application/vnd.google-apps.folder' and trashed=false")
-            .setFields("files(id)")
-            .setPageSize(5)
-            .execute()
-        return result.files.firstOrNull()?.id
-    }
-
-    private fun createFolder(d: Drive): String {
-        val meta = com.google.api.services.drive.model.File()
-            .setName(FOLDER_NAME)
-            .setMimeType("application/vnd.google-apps.folder")
-        return d.files().create(meta).setFields("id").execute().id
+    private fun childMap(folder: DocumentFile): MutableMap<String, DocumentFile> {
+        val map = mutableMapOf<String, DocumentFile>()
+        for (c in folder.listFiles()) {
+            val n = c.name ?: continue
+            map[n] = c
+        }
+        return map
     }
 
     private suspend fun exportTo(
-        d: Drive,
-        folderId: String,
+        folder: DocumentFile,
         context: Context,
         db: AppDatabase,
         onProgress: (String) -> Unit,
     ): Int = withContext(Dispatchers.IO) {
-        onProgress("Backing up to Drive")
+        onProgress("Backing up to the picked folder")
         val recipes = db.recipeDao().getAllRecipesOnce()
+        val children = childMap(folder)
+
+        // Upload photos first so the library file can record the names the
+        // folder actually gave them.
+        val remoteNames = mutableMapOf<String, String>()
+        for (r in recipes) {
+            val p = r.originalImagePath ?: continue
+            val f = File(p)
+            if (!f.exists()) continue
+            val want = f.name
+            val existing = children[want] ?: children[want.substringBeforeLast('.')]
+            if (existing != null && existing.isFile && existing.length() > 0L) {
+                remoteNames[p] = want
+                continue
+            }
+            val mime = if (f.extension.equals("png", true)) "image/png" else "image/jpeg"
+            val doc = folder.createFile(mime, want.substringBeforeLast('.'))
+                ?: throw IOException("The picked folder would not accept a new photo")
+            context.contentResolver.openOutputStream(doc.uri)?.use { out ->
+                f.inputStream().use { it.copyTo(out) }
+            } ?: throw IOException("The picked folder would not accept a new photo")
+            remoteNames[p] = doc.name ?: want
+        }
+
         val arr = JSONArray()
         for (r in recipes) {
             val ings = db.ingredientDao().getIngredientsForRecipeOnce(r.id)
             val sts = db.stepDao().getStepsForRecipeOnce(r.id)
-            arr.put(encodeRecipe(r, ings, sts))
+            arr.put(encodeRecipe(r, ings, sts, remoteNames[r.originalImagePath]))
         }
         val root = JSONObject()
             .put("version", 1)
             .put("exportedAt", System.currentTimeMillis())
             .put("recipes", arr)
-        val tmp = File(context.cacheDir, JSON_NAME)
+        val tmp = File(context.cacheDir, "$JSON_STEM-export.json")
         tmp.writeText(root.toString())
 
-        val old = d.files().list()
-            .setQ("name='$JSON_NAME' and '$folderId' in parents and trashed=false")
-            .setFields("files(id)")
-            .setPageSize(5)
-            .execute()
-        old.files.forEach { d.files().delete(it.id).execute() }
-        val meta = com.google.api.services.drive.model.File()
-            .setName(JSON_NAME)
-            .setParents(listOf(folderId))
-        d.files().create(meta, FileContent("application/json", tmp)).setFields("id").execute()
+        // Replace the old library file rather than editing it in place.
+        children.entries.filter { it.key.startsWith(JSON_STEM, ignoreCase = true) }
+            .forEach { it.value.delete() }
+        val doc = folder.createFile("application/json", JSON_STEM)
+            ?: throw IOException("The picked folder would not accept the library file")
+        context.contentResolver.openOutputStream(doc.uri)?.use { out ->
+            tmp.inputStream().use { it.copyTo(out) }
+        } ?: throw IOException("The picked folder would not accept the library file")
 
-        onProgress("Uploading photos")
-        val existing = d.files().list()
-            .setQ("'$folderId' in parents and trashed=false")
-            .setFields("files(id,name)")
-            .setPageSize(200)
-            .execute()
-            .files
-            .map { it.name }
-            .toSet()
-        for (r in recipes) {
-            val p = r.originalImagePath ?: continue
-            val f = File(p)
-            if (!f.exists() || f.name in existing) continue
-            val type = if (f.extension.equals("png", true)) "image/png" else "image/jpeg"
-            val meta2 = com.google.api.services.drive.model.File()
-                .setName(f.name)
-                .setParents(listOf(folderId))
-            d.files().create(meta2, FileContent(type, f)).setFields("id").execute()
-        }
+        onProgress("Backed up ${recipes.size} recipes")
         recipes.size
     }
 
@@ -139,6 +133,7 @@ object DriveSyncManager {
         r: Recipe,
         ings: List<Ingredient>,
         sts: List<Step>,
+        photoName: String?,
     ): JSONObject {
         val o = JSONObject()
         o.put("title", r.title)
@@ -150,7 +145,7 @@ object DriveSyncManager {
         o.put("cookTimeMinutes", r.cookTimeMinutes ?: JSONObject.NULL)
         o.put("dateAdded", r.dateAdded)
         o.put("dateModified", r.dateModified)
-        o.put("photo", r.originalImagePath?.substringAfterLast('/') ?: JSONObject.NULL)
+        o.put("photo", photoName ?: JSONObject.NULL)
         o.put(
             "ingredients",
             JSONArray().apply {
@@ -183,23 +178,20 @@ object DriveSyncManager {
     }
 
     private suspend fun importFrom(
-        d: Drive,
-        folderId: String,
+        folder: DocumentFile,
         context: Context,
         db: AppDatabase,
         onProgress: (String) -> Unit,
     ): Int = withContext(Dispatchers.IO) {
-        onProgress("Checking the Drive library")
-        val listing = d.files().list()
-            .setQ("name='$JSON_NAME' and '$folderId' in parents and trashed=false")
-            .setFields("files(id)")
-            .setPageSize(5)
-            .execute()
-        val fileId = listing.files.firstOrNull()?.id ?: return@withContext 0
-        val tmp = File(context.cacheDir, "import-$JSON_NAME")
-        d.files().get(fileId).executeMediaAsInputStream().use { ins ->
+        onProgress("Checking the other device's library")
+        val children = childMap(folder)
+        val doc = children.entries
+            .firstOrNull { it.key.startsWith(JSON_STEM, ignoreCase = true) }
+            ?.value ?: return@withContext 0
+        val tmp = File(context.cacheDir, "$JSON_STEM-import.json")
+        context.contentResolver.openInputStream(doc.uri)?.use { ins ->
             tmp.outputStream().use { ins.copyTo(it) }
-        }
+        } ?: return@withContext 0
         val root = JSONObject(tmp.readText())
         val arr = root.optJSONArray("recipes") ?: return@withContext 0
 
@@ -216,13 +208,13 @@ object DriveSyncManager {
             if (title.trim().lowercase() in existing) continue
             val now = System.currentTimeMillis()
             val photoName = o.optString("photo").takeIf { it.isNotBlank() && it != "null" }
-            val localPhoto = photoName?.let { downloadPhoto(d, folderId, photoDir, it) }
+            val localPhoto = photoName?.let { downloadPhoto(context, children, photoDir, it) }
             val addedMs = o.optLong("dateAdded", now)
             val rid = db.recipeDao().insert(
                 Recipe(
                     title = title,
                     baseServings = o.optInt("baseServings", 1).coerceAtLeast(1),
-                    sourceType = o.optString("sourceType").ifBlank { "drive" },
+                    sourceType = o.optString("sourceType").ifBlank { "imported" },
                     sourceNote = o.optString("sourceNote").takeIf { it.isNotBlank() && it != "null" },
                     notes = o.optString("notes").takeIf { it.isNotBlank() && it != "null" },
                     prepTimeMinutes = if (o.has("prepTimeMinutes") && !o.isNull("prepTimeMinutes")) o.optInt("prepTimeMinutes") else null,
@@ -271,24 +263,24 @@ object DriveSyncManager {
             existing.add(title.trim().lowercase())
             added++
         }
-        if (added > 0) onProgress("Pulled $added recipes from Drive")
+        if (added > 0) onProgress("Pulled $added recipes from the other device")
         added
     }
 
-    private fun downloadPhoto(d: Drive, folderId: String, dir: File, name: String): String? {
+    private fun downloadPhoto(
+        context: Context,
+        children: Map<String, DocumentFile>,
+        dir: File,
+        name: String,
+    ): String? {
         return try {
             val out = File(dir, name)
             if (out.exists() && out.length() > 0L) return out.absolutePath
-            val listing = d.files().list()
-                .setQ("name='$name' and '$folderId' in parents and trashed=false")
-                .setFields("files(id)")
-                .setPageSize(2)
-                .execute()
-            val id = listing.files.firstOrNull()?.id ?: return null
-            d.files().get(id).executeMediaAsInputStream().use { ins ->
+            val doc = children[name] ?: children[name.substringBeforeLast('.')] ?: return null
+            context.contentResolver.openInputStream(doc.uri)?.use { ins ->
                 out.outputStream().use { ins.copyTo(it) }
-            }
-            out.absolutePath
+            } ?: return null
+            if (out.exists() && out.length() > 0L) out.absolutePath else null
         } catch (t: Throwable) {
             null
         }

@@ -1,6 +1,5 @@
 package com.trypod33.kitchlore.ui
 
-import android.accounts.AccountManager
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,10 +54,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Recipe
-import com.trypod33.kitchlore.sync.DriveSyncManager
+import com.trypod33.kitchlore.sync.FolderSyncManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -262,39 +260,35 @@ fun RecipeListScreen(
     var newIng by remember { mutableStateOf("") }
     val recipes by db.recipeDao().getAllRecipes().collectAsState(initial = emptyList())
 
-    val accountPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-        val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
-        if (accountName != null) {
-            DriveSyncManager.saveAccount(context, accountName)
-            syncMsg = "Account saved, tap Sync again"
-        }
-    }
-    val consentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
-        syncMsg = "Permission granted, tap Sync again"
-    }
-
-    fun doSync() {
+    fun runSync() {
         if (syncing) return
-        val cred = DriveSyncManager.credential(context)
-        if (cred.selectedAccountName == null) {
-            accountPicker.launch(cred.newChooseAccountIntent())
-            return
-        }
         syncing = true
         syncMsg = "Syncing..."
         scope.launch {
             try {
-                syncMsg = DriveSyncManager.sync(context, db)
-            } catch (e: UserRecoverableAuthIOException) {
-                consentLauncher.launch(e.intent)
-                syncMsg = "Google asked for permission"
-            } catch (e: java.io.IOException) {
-                syncMsg = "No connection"
+                syncMsg = FolderSyncManager.sync(context, db) { onProgress -> syncMsg = onProgress }
             } catch (e: Exception) {
-                syncMsg = "Sync failed"
+                syncMsg = e.message ?: "Sync failed"
             }
             syncing = false
         }
+    }
+
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            FolderSyncManager.saveFolder(context, uri)
+            syncMsg = "Folder picked, syncing..."
+            runSync()
+        }
+    }
+
+    fun doSync() {
+        if (syncing) return
+        if (!FolderSyncManager.hasFolder(context)) {
+            folderPicker.launch(null)
+            return
+        }
+        runSync()
     }
 
     val trimmed = query.trim()
@@ -397,7 +391,7 @@ fun RecipeListScreen(
             if (recipes.isEmpty()) {
                 item {
                     Text(
-                        "No recipes yet. Scan a page, import a photo or document, sync the Drive library, or hunt for one online.",
+                        "No recipes yet. Scan a page, import a photo or document, sync with your other device, or hunt for one online.",
                         modifier = Modifier.padding(20.dp),
                         style = MaterialTheme.typography.bodyMedium,
                     )

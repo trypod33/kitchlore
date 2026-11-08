@@ -39,8 +39,8 @@ android {
         applicationId = "com.trypod33.kitchlore"
         minSdk = 26
         targetSdk = 34
-        versionCode = 58
-        versionName = "0.6.0"
+        versionCode = 59
+        versionName = "0.6.1"
         buildConfigField("String", "MODEL_URL", "\"${prop("modelUrl", "https://huggingface.co/litert-community/SmolLM2-360M-Instruct/resolve/main/SmolLM2_360M_instruct.litertlm")}\"")
     }
 
@@ -135,9 +135,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-    implementation("com.google.api-client:google-api-client-android:2.4.0")
-    implementation("com.google.apis:google-api-services-drive:v3-rev20240509-2.0.0")
-    implementation("com.google.android.gms:play-services-auth:21.2.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     testImplementation("junit:junit:4.13.2")
 }
