@@ -44,7 +44,7 @@ object RecipeLlm {
     private const val ENGINE_INIT_TIMEOUT_MS = 90_000L
     private const val LINE_TIMEOUT_MS = 45_000L
     private const val CLASSIFY_TIMEOUT_MS = 60_000L
-    private const val MODEL_WAIT_MS = 180_000L
+    private const val MODEL_WAIT_MS = 600_000L
 
     /**
      * Runs block on a fresh watchdog thread with a hard deadline; null when it
@@ -130,7 +130,10 @@ object RecipeLlm {
             if (i !in idxs) {
                 ing
             } else {
-                if (!ready) return recipe // the engine wedged and was torn down mid-pass
+                if (!ready) {
+                    onStatus("AI cleanup skipped (engine wedged); keeping the raw read")
+                    return recipe
+                } // the engine wedged and was torn down mid-pass
                 val raw = ing.rawText.ifBlank { ing.name }
                 if (!announced) {
                     onStatus("AI is reading the garbled lines")
@@ -138,7 +141,10 @@ object RecipeLlm {
                 }
                 val fixed = cleanLine(raw)
                 if (fixed == null) {
-                    if (!ready) return recipe // wedged mid-pass: keep the raw read
+                    if (!ready) {
+                        onStatus("AI cleanup skipped (engine wedged); keeping the raw read")
+                        return recipe
+                    } // wedged mid-pass: keep the raw read
                     ing
                 } else ParsedIngredient(name = fixed, rawText = raw, amount = null, unit = null)
             }

@@ -53,6 +53,7 @@ fun ReviewImportScreen(
     parsed: ParsedRecipe,
     photoPath: String?,
     sourceNote: String,
+    aiNote: String? = null,
     onSaved: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -123,6 +124,14 @@ fun ReviewImportScreen(
 
     Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
         Text("Review recipe", fontSize = 26.sp)
+        aiNote?.let {
+            Text(
+                it,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         PhotoEditSection(
             path = photo,
             onPathChange = { photo = it },

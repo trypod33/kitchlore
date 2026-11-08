@@ -97,6 +97,8 @@ fun ScanRoute(
     }
     val scope = rememberCoroutineScope()
     var aiStatus by remember { mutableStateOf<String?>(null) }
+    // The AI-skip reason that should still be visible on the review screen.
+    var aiNote by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var parsed by remember { mutableStateOf<Pair<ParsedRecipe, String?>?>(null) }
@@ -128,7 +130,12 @@ fun ScanRoute(
 
     fun handleParsed(recipes: List<ParsedRecipe>, path: String?) {
         if (recipes.size <= 1) {
-            val only = recipes.firstOrNull() ?: return
+            val only = recipes.firstOrNull()
+            if (only == null) {
+                // A read that yields nothing used to be a silent no-op; say so.
+                error = "Couldn't read anything off that page. Try again in better light, or use the document scan button."
+                return
+            }
             stage(only, path)
             return
         }
@@ -139,15 +146,20 @@ fun ScanRoute(
     }
 
     fun enhance(recipe: ParsedRecipe, path: String?) {
+        aiNote = null
         scope.launch {
             try {
-                val fixed = RecipeLlm.enhance(context, recipe) { st -> aiStatus = st.ifBlank { null } }
+                val fixed = RecipeLlm.enhance(context, recipe) { st ->
+                    aiStatus = st.ifBlank { null }
+                    if (st.startsWith("AI cleanup skipped")) aiNote = st
+                }
                 parsed = fixed to path
                 aiStatus = null
             } catch (t: Throwable) {
                 // The AI pass is optional; the deterministic parse still stands.
                 parsed = recipe to path
                 aiStatus = "AI cleanup skipped (${t.message ?: "error"})"
+                aiNote = aiStatus
             }
         }
     }
@@ -221,9 +233,12 @@ fun ScanRoute(
             parsed = p.first,
             photoPath = p.second,
             sourceNote = if (mode == "photo") "Imported from photo" else "Scanned from camera",
+            aiNote = aiNote,
             onSaved = {
                 val next = pendingReviews
                 if (next.isEmpty()) {
+                    staged = emptyList()
+                    aiNote = null
                     onDone()
                 } else {
                     pendingReviews = next.drop(1)
@@ -233,6 +248,8 @@ fun ScanRoute(
             onCancel = {
                 val next = pendingReviews
                 if (next.isEmpty()) {
+                    staged = emptyList()
+                    aiNote = null
                     onBack()
                 } else {
                     pendingReviews = next.drop(1)
@@ -391,6 +408,7 @@ fun ScanRoute(
                         error = null
                         launchDocScan()
                     },
+                    enabled = !busy,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp).height(56.dp),
                 ) { Text("Scan document (auto-crop)") }
                 Button(
@@ -421,6 +439,7 @@ fun ScanRoute(
                             },
                         )
                     },
+                    enabled = !busy,
                     modifier = Modifier.fillMaxWidth().padding(20.dp).height(56.dp),
                 ) { Text("Photograph recipe page") }
             }
