@@ -45,28 +45,37 @@ object WebSearchEngine {
             "https://www.bing.com/search?q=" + enc(query),
             "(function(){var o=[];document.querySelectorAll('li.b_algo').forEach(function(li){" +
                 "var a=li.querySelector('h2 a')||li.querySelector('a');" +
-                "if(a&&a.href&&a.innerText&&a.innerText.trim())o.push({t:a.innerText.trim(),u:a.href});" +
+                "if(a&&a.href&&a.innerText&&a.innerText.trim()){" +
+                "var p=li.querySelector('.b_caption p')||li.querySelector('p');" +
+                "var im=li.querySelector('img');" +
+                "o.push({t:a.innerText.trim(),u:a.href,d:p?p.innerText.trim():'',i:im?im.src:''});}" +
                 "});return JSON.stringify(o)})()",
         ),
         Engine(
             "ddghtml",
             "https://html.duckduckgo.com/html/?q=" + enc(query),
             "(function(){var o=[];document.querySelectorAll('a.result__a').forEach(function(a){" +
-                "if(a.href&&a.innerText&&a.innerText.trim())o.push({t:a.innerText.trim(),u:a.href});" +
+                "if(a.href&&a.innerText&&a.innerText.trim()){" +
+                "var res=a.closest('.result');" +
+                "var sn=res?res.querySelector('a.result__snippet'):null;" +
+                "o.push({t:a.innerText.trim(),u:a.href,d:sn?sn.innerText.trim():''});}" +
                 "});return JSON.stringify(o)})()",
         ),
         Engine(
             "ddglite",
             "https://lite.duckduckgo.com/lite/?q=" + enc(query),
-            "(function(){var o=[];document.querySelectorAll('a.result-link').forEach(function(a){" +
-                "if(a.href&&a.innerText&&a.innerText.trim())o.push({t:a.innerText.trim(),u:a.href});" +
+            "(function(){var o=[];var sn=[].slice.call(document.querySelectorAll('td.result-snippet')).map(function(e){return e.innerText.trim();});" +
+                "document.querySelectorAll('a.result-link').forEach(function(a,i){" +
+                "if(a.href&&a.innerText&&a.innerText.trim())o.push({t:a.innerText.trim(),u:a.href,d:sn[i]||''});" +
                 "});return JSON.stringify(o)})()",
         ),
         Engine(
             "mojeek",
             "https://www.mojeek.com/search?q=" + enc(query),
             "(function(){var o=[];document.querySelectorAll('a.title, a.ob, ul.results-standard li a').forEach(function(a){" +
-                "if(a.href&&a.innerText&&a.innerText.trim())o.push({t:a.innerText.trim(),u:a.href});" +
+                "if(a.href&&a.innerText&&a.innerText.trim()){" +
+                "var box=a.closest('li,div');var p=box?box.querySelector('p'):null;" +
+                "o.push({t:a.innerText.trim(),u:a.href,d:p?p.innerText.trim():''});}" +
                 "});return JSON.stringify(o)})()",
         ),
     )
@@ -179,7 +188,12 @@ object WebSearchEngine {
                 val url = cleanUrl(o.optString("u"))
                 if (url.isEmpty() || title.length < 8) continue
                 if (!seen.add(url)) continue
-                out.add(KeylessSearch.Result(title = title, url = url, engine = "web"))
+                var desc = o.optString("d").trim().ifBlank { null }
+                if (desc != null && desc.length > 220) desc = desc.take(220) + "\u2026"
+                var img = o.optString("i").trim().ifBlank { null }
+                if (img != null && img.startsWith("//")) img = "https:$img"
+                if (img != null && !img.startsWith("http")) img = null
+                out.add(KeylessSearch.Result(title = title, url = url, engine = "web", thumbnailUrl = img, description = desc))
                 if (out.size >= 15) break
             }
             out

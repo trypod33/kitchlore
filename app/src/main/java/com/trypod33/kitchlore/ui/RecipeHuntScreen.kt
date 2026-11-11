@@ -19,9 +19,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -38,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -45,10 +48,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.trypod33.kitchlore.data.HtmlRecipeParser
 import com.trypod33.kitchlore.data.KeylessSearch
 import com.trypod33.kitchlore.data.WebSearchEngine
 import com.trypod33.kitchlore.data.fetchPage
+import com.trypod33.kitchlore.data.ParsedWebRecipe
 import com.trypod33.kitchlore.data.insertWebRecipe
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Recipe
@@ -275,6 +281,12 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var pantryMode by remember { mutableStateOf(false) }
     var webLabel by remember { mutableStateOf("From the web") }
     var searched by remember { mutableStateOf(false) }
+    // Peek-before-import: a web card opens a preview of the recipe, and the
+    // import only happens from the preview's own button.
+    var previewHit by remember { mutableStateOf<KeylessSearch.Result?>(null) }
+    var previewLoading by remember { mutableStateOf(false) }
+    var previewParsed by remember { mutableStateOf<ParsedWebRecipe?>(null) }
+    var previewFailed by remember { mutableStateOf(false) }
 
     fun runSearch() {
         val q = query.trim()
@@ -325,6 +337,40 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                 message = "Nothing came back for that. Try fewer words, or paste a link to a recipe page."
             }
             loading = false
+        }
+    }
+
+    fun openPreview(hit: KeylessSearch.Result) {
+        previewHit = hit
+        previewLoading = true
+        previewParsed = null
+        previewFailed = false
+        scope.launch {
+            val parsed = withContext(Dispatchers.IO) {
+                fetchPage(hit.url)?.let { HtmlRecipeParser.parse(it) }
+            }
+            if (previewHit?.url != hit.url) return@launch
+            previewParsed = parsed
+            previewFailed = parsed == null || (parsed.ingredients.isEmpty() && parsed.steps.isEmpty())
+            previewLoading = false
+        }
+    }
+
+    fun importFromPreview() {
+        val hit = previewHit ?: return
+        val parsed = previewParsed ?: return
+        if (previewFailed || importingUrl != null) return
+        importingUrl = hit.url
+        message = "Bringing in ${hit.title}..."
+        scope.launch {
+            val newId = insertWebRecipe(db, context, parsed, hit.url)
+            if (newId > 0) {
+                previewHit = null
+                onOpen(newId)
+            } else {
+                message = "Save failed, try again."
+            }
+            importingUrl = null
         }
     }
 
@@ -424,48 +470,29 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                 ResultCard {
                     Row(
                         Modifier.fillMaxWidth()
-                            .clickable(enabled = importingUrl == null) {
-                                importingUrl = r.url
-                                message = "Bringing in ${r.title}..."
-                                scope.launch {
-                                    val parsed = withContext(Dispatchers.IO) {
-                                        fetchPage(r.url)?.let { HtmlRecipeParser.parse(it) }
-                                    }
-                                    if (parsed != null && (parsed.ingredients.isNotEmpty() || parsed.steps.isNotEmpty())) {
-                                        val newId = insertWebRecipe(db, context, parsed, r.url)
-                                        if (newId > 0) {
-                                            onOpen(newId)
-                                        } else {
-                                            message = "Save failed, try again."
-                                            importingUrl = null
-                                        }
-                                    } else {
-                                        message = "That page hides its recipe. Opening the import screen for it."
-                                        onOpenWeb(r.url)
-                                    }
-                                }
-                            }
-                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                            .clickable(enabled = importingUrl == null) { openPreview(r) }
+                            .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    r.title.trim().take(1).uppercase(),
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                )
-                            }
-                        }
+                        WebThumb(
+                            r.thumbnailUrl,
+                            Modifier
+                                .size(64.dp)
+                                .clip(RoundedCornerShape(12.dp)),
+                        )
                         Column(Modifier.padding(start = 12.dp)) {
                             Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                            if (r.description != null) {
+                                Text(
+                                    r.description,
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
+                            }
                             Text(
-                                hostOf(r.url) + "  \u00B7  tap to add",
+                                hostOf(r.url) + "  \u00B7  tap to look inside",
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -487,7 +514,124 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
             }
         }
     }
+
+    previewHit?.let { hit ->
+        Dialog(
+            onDismissRequest = { previewHit = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                    if (previewLoading) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 24.dp)) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text("  Reading the page...", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        val parsed = previewParsed
+                        if (parsed != null && !previewFailed) {
+                            parsed.imageUrl?.let { img ->
+                                WebThumb(
+                                    img,
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(160.dp)
+                                        .clip(RoundedCornerShape(14.dp)),
+                                )
+                            }
+                            Text(
+                                hit.title,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 12.dp),
+                            )
+                            Text(
+                                hostOf(hit.url),
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            val meta = buildList {
+                                parsed.totalMinutes?.let { add(formatMinutes(it)) }
+                                parsed.yieldServings?.let { add("Serves $it") }
+                                if (parsed.ingredients.isNotEmpty()) add("${parsed.ingredients.size} ingredients")
+                                if (parsed.steps.isNotEmpty()) add("${parsed.steps.size} steps")
+                            }
+                            if (meta.isNotEmpty()) {
+                                Text(
+                                    meta.joinToString("  \u00B7  "),
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            if (parsed.ingredients.isNotEmpty()) {
+                                SectionLabel("Ingredients")
+                                parsed.ingredients.forEach { line ->
+                                    Text("\u2022  $line", fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
+                                }
+                            }
+                            if (parsed.steps.isNotEmpty()) {
+                                SectionLabel("How to make it")
+                                parsed.steps.take(2).forEachIndexed { i, step ->
+                                    Text(
+                                        "${i + 1}.  $step",
+                                        fontSize = 14.sp,
+                                        maxLines = 4,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
+                                }
+                                if (parsed.steps.size > 2) {
+                                    Text(
+                                        "Plus ${parsed.steps.size - 2} more steps once it is in your library.",
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                "That page hides its recipe, so there is nothing to peek at here.",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 16.dp)) {
+                            Button(
+                                onClick = { importFromPreview() },
+                                enabled = importingUrl == null && previewParsed != null && !previewFailed,
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Text(if (importingUrl != null) "Adding..." else "Add to library")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    previewHit = null
+                                    onOpenWeb(hit.url)
+                                },
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                shape = RoundedCornerShape(14.dp),
+                            ) { Text("Open the page") }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
+
+/** 45 -> "45 min", 135 -> "2 hr 15 min". */
+private fun formatMinutes(m: Int): String =
+    if (m >= 60) {
+        val h = m / 60
+        val r = m % 60
+        if (r == 0) "$h hr" else "$h hr $r min"
+    } else "$m min"
 
 private fun hostOf(url: String): String = try {
     URI(url).host?.removePrefix("www.") ?: url

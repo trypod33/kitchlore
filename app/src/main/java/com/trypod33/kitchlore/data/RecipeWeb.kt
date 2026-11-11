@@ -205,7 +205,15 @@ object HtmlRecipeParser {
  * empty and the UI says so honestly.
  */
 object KeylessSearch {
-    data class Result(val title: String, val url: String, val engine: String)
+    data class Result(
+        val title: String,
+        val url: String,
+        val engine: String,
+        // A one-line summary and photo from the search page, when the
+        // engine carries them, so a result can be judged without opening it.
+        val thumbnailUrl: String? = null,
+        val description: String? = null,
+    )
 
     // A wide list on purpose: these instances rate-limit or refuse an automated
     // caller at any hour, so the chain walks as many as it needs and accepts
@@ -252,7 +260,10 @@ object KeylessSearch {
                 val r = arr.getJSONObject(i)
                 val u = r.optString("url")
                 val t = r.optString("title")
-                if (u.startsWith("http") && t.isNotBlank()) out.add(Result(stripTags(t), u, "SearXNG"))
+                val d = stripTags(r.optString("content")).trim().ifBlank { null }
+                var img = r.optString("img_src").ifBlank { null }
+                if (img != null && img.startsWith("//")) img = "https:$img"
+                if (u.startsWith("http") && t.isNotBlank()) out.add(Result(stripTags(t), u, "SearXNG", img, d))
                 if (out.size >= 10) break
             }
             out
