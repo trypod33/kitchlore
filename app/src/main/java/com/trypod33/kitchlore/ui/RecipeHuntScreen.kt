@@ -55,10 +55,13 @@ import com.trypod33.kitchlore.data.KeylessSearch
 import com.trypod33.kitchlore.data.WebSearchEngine
 import com.trypod33.kitchlore.data.fetchPage
 import com.trypod33.kitchlore.data.ParsedWebRecipe
+import com.trypod33.kitchlore.data.RoundupMiner
+import com.trypod33.kitchlore.data.WebPageReader
 import com.trypod33.kitchlore.data.insertWebRecipe
 import com.trypod33.kitchlore.data.local.AppDatabase
 import com.trypod33.kitchlore.data.local.entity.Recipe
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URI
@@ -126,6 +129,17 @@ object WebHunt {
         return SmartResult(false, seen.values.toList())
     }
 }
+
+/**
+ * What the hunt learned by reading a result's own page: the real recipe
+ * (name, photo, times), or the dishes a roundup article links, or nothing
+ * usable. The card upgrades itself as each read lands.
+ */
+private data class EnrichedHit(
+    val parsed: ParsedWebRecipe?,
+    val isRecipe: Boolean,
+    val dishes: List<RoundupMiner.DishLink> = emptyList(),
+)
 
 /** A photo loaded from a URL, with a quiet placeholder while it loads or if it cannot. */
 @Composable
@@ -287,6 +301,29 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var previewLoading by remember { mutableStateOf(false) }
     var previewParsed by remember { mutableStateOf<ParsedWebRecipe?>(null) }
     var previewFailed by remember { mutableStateOf(false) }
+    var enriched by remember { mutableStateOf<Map<String, EnrichedHit>>(emptyMap()) }
+    var enrichJob by remember { mutableStateOf<Job?>(null) }
+    var roundupUrl by remember { mutableStateOf<String?>(null) }
+
+    /** Puts recipes first, dish-bearing roundups next, plain articles last. */
+    fun resortHits() {
+        val seenTitles = HashSet<String>()
+        val kept = ArrayList<KeylessSearch.Result>()
+        for (h in webHits) {
+            val title = enriched[h.url]?.parsed?.title?.trim()?.lowercase()
+            if (title != null && !seenTitles.add(title)) continue // same dish from another engine
+            kept.add(h)
+        }
+        fun rank(h: KeylessSearch.Result): Int {
+            val e = enriched[h.url] ?: return 2
+            return when {
+                e.isRecipe -> 0
+                e.dishes.isNotEmpty() -> 1
+                else -> 2
+            }
+        }
+        webHits = kept.sortedBy { rank(it) }
+    }
 
     fun runSearch() {
         val q = query.trim()
@@ -299,6 +336,8 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
         searched = false
         libraryHits = emptyList()
         webHits = emptyList()
+        enriched = emptyMap()
+        enrichJob?.cancel()
         val terms = q.split(",").map { it.trim() }.filter { it.isNotEmpty() }
         val usePantry = terms.isEmpty()
         pantryMode = usePantry
@@ -337,22 +376,52 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                 message = "Nothing came back for that. Try fewer words, or paste a link to a recipe page."
             }
             loading = false
+            // Read each result's own page so the cards can name the dish.
+            // One page at a time, top results first; cards update as reads land.
+            enrichJob = scope.launch {
+                for (hit in web.take(12)) {
+                    if (enriched.containsKey(hit.url)) continue
+                    val html = WebPageReader.read(context, hit.url)
+                    val parsed = withContext(Dispatchers.IO) { html?.let { HtmlRecipeParser.parse(it) } }
+                    val isRecipe = parsed != null &&
+                        (parsed.ingredients.isNotEmpty() || parsed.steps.isNotEmpty())
+                    val dishes = if (isRecipe || html == null) {
+                        emptyList()
+                    } else {
+                        withContext(Dispatchers.IO) { RoundupMiner.mine(html, hit.url) }
+                    }
+                    if (enriched.containsKey(hit.url)) continue
+                    enriched = enriched + (hit.url to EnrichedHit(parsed, isRecipe, dishes))
+                    resortHits()
+                }
+            }
         }
     }
 
     fun openPreview(hit: KeylessSearch.Result) {
+        val cached = enriched[hit.url]?.parsed
+        if (cached != null && (cached.ingredients.isNotEmpty() || cached.steps.isNotEmpty())) {
+            previewHit = hit
+            previewLoading = false
+            previewParsed = cached
+            previewFailed = false
+            return
+        }
         previewHit = hit
         previewLoading = true
         previewParsed = null
         previewFailed = false
         scope.launch {
-            val parsed = withContext(Dispatchers.IO) {
-                fetchPage(hit.url)?.let { HtmlRecipeParser.parse(it) }
-            }
+            val html = WebPageReader.read(context, hit.url)
+            val parsed = withContext(Dispatchers.IO) { html?.let { HtmlRecipeParser.parse(it) } }
             if (previewHit?.url != hit.url) return@launch
             previewParsed = parsed
             previewFailed = parsed == null || (parsed.ingredients.isEmpty() && parsed.steps.isEmpty())
             previewLoading = false
+            if (!previewFailed) {
+                enriched = enriched + (hit.url to EnrichedHit(parsed, true))
+                resortHits()
+            }
         }
     }
 
@@ -467,22 +536,55 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                 item { SectionLabel(webLabel) }
             }
             items(webHits, key = { "web-" + it.url }) { r ->
+                val e = enriched[r.url]
+                val name = e?.parsed?.title?.trim()?.takeIf { it.isNotBlank() } ?: r.title
+                val photo = e?.parsed?.imageUrl ?: r.thumbnailUrl
+                val subtitle = when {
+                    e?.isRecipe == true -> {
+                        val meta = buildList {
+                            e.parsed?.totalMinutes?.let { add(formatMinutes(it)) }
+                            e.parsed?.yieldServings?.let { add("serves $it") }
+                            e.parsed?.ingredients?.size?.let { if (it > 0) add("$it ingredients") }
+                        }
+                        (if (meta.isEmpty()) "recipe" else meta.joinToString("  \u00B7  ")) +
+                            "  \u00B7  " + hostOf(r.url) + "  \u00B7  tap to look inside"
+                    }
+                    e != null && e.dishes.isNotEmpty() ->
+                        "${e.dishes.size} dishes inside  \u00B7  " + hostOf(r.url) + "  \u00B7  tap to see them"
+                    e != null ->
+                        "article from " + hostOf(r.url) + "  \u00B7  tap to open it"
+                    else ->
+                        hostOf(r.url) + "  \u00B7  tap to look inside"
+                }
                 ResultCard {
                     Row(
                         Modifier.fillMaxWidth()
-                            .clickable(enabled = importingUrl == null) { openPreview(r) }
+                            .clickable(enabled = importingUrl == null) {
+                                when {
+                                    e == null || e.isRecipe -> openPreview(r)
+                                    e.dishes.isNotEmpty() -> roundupUrl = r.url
+                                    else -> onOpenWeb(r.url)
+                                }
+                            }
                             .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         WebThumb(
-                            r.thumbnailUrl,
+                            photo,
                             Modifier
                                 .size(64.dp)
                                 .clip(RoundedCornerShape(12.dp)),
                         )
                         Column(Modifier.padding(start = 12.dp)) {
-                            Text(r.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                            if (r.description != null) {
+                            Text(name, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                            Text(
+                                subtitle,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                            if (e == null && r.description != null) {
                                 Text(
                                     r.description,
                                     fontSize = 13.sp,
@@ -491,12 +593,6 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                                     modifier = Modifier.padding(top = 2.dp),
                                 )
                             }
-                            Text(
-                                hostOf(r.url) + "  \u00B7  tap to look inside",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                            )
                         }
                     }
                 }
@@ -619,6 +715,56 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
                             ) { Text("Open the page") }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    roundupUrl?.let { url ->
+        val hit = webHits.firstOrNull { it.url == url }
+        val dishes = enriched[url]?.dishes.orEmpty()
+        Dialog(
+            onDismissRequest = { roundupUrl = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                    Text(
+                        hit?.title ?: "This roundup",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        if (dishes.isEmpty()) {
+                            "Reading the article for its dishes..."
+                        } else {
+                            "${dishes.size} dishes inside  \u00B7  " + hostOf(url)
+                        },
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    dishes.forEach { dish ->
+                        Text(
+                            dish.title,
+                            fontSize = 15.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    roundupUrl = null
+                                    openPreview(KeylessSearch.Result(dish.title, dish.url, "hunt"))
+                                }
+                                .padding(top = 12.dp),
+                        )
+                    }
+                    TextButton(
+                        onClick = { roundupUrl = null },
+                        modifier = Modifier.padding(top = 8.dp),
+                    ) { Text("Close") }
                 }
             }
         }

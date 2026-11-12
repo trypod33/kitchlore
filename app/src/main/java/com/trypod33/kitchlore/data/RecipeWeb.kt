@@ -351,6 +351,63 @@ object KeylessSearch {
     }
 }
 
+/**
+ * Roundup articles ("48 best chicken dinners") carry no Recipe data of their
+ * own, but their pages link the actual dishes. Mining those links turns one
+ * search hit into a shelf of real recipe names, which is what the hunt is for.
+ */
+object RoundupMiner {
+    data class DishLink(val title: String, val url: String)
+
+    private val ANCHOR = Regex(
+        "<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+        setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE),
+    )
+
+    // A link counts as a dish when its address says recipe, or it sits in a
+    // recipe path segment on sites that name dishes differently.
+    private val RECIPE_HINT = Regex("recipe|/r-|/cookbook|/dish", RegexOption.IGNORE_CASE)
+
+    private val NAV = Regex(
+        "^(home|about|search|sign|login|shop|subscribe|newsletter|all categories|recipes|dinner|contact|privacy|terms|facebook|pinterest|instagram|twitter|youtube|back to)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    // Site chrome that slips past the word count: account and marketing
+    // fixtures that link to recipe-ish paths but are not dishes.
+    private val NAV_PHRASES = Regex(
+        "recipe box|my recipes|saved recipes|shopping list|meal plan|sign in|log in|create account|gift cards|cooking school|contact us|customer service|careers|ad choices|press room|sitemap|accessibility|newsletter|weeknight cooking|recipe of the day",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun mine(html: String, pageUrl: String): List<DishLink> {
+        val out = LinkedHashMap<String, DishLink>()
+        for (m in ANCHOR.findAll(html)) {
+            val raw = m.groupValues[1]
+            var text = stripTags(m.groupValues[2]).trim()
+            if (text.length < 12) continue
+            val words = text.split(Regex("\\s+"))
+            if (words.size < 3 || words.size > 12) continue
+            if (NAV.containsMatchIn(text)) continue
+            if (NAV_PHRASES.containsMatchIn(text)) continue
+            if (!RECIPE_HINT.containsMatchIn(raw)) continue
+            val resolved = try {
+                java.net.URL(java.net.URL(pageUrl), raw).toString()
+            } catch (t: Throwable) {
+                continue
+            }
+            if (resolved == pageUrl) continue
+            // Trim trailing decoration: "Creamy Tuscan Chicken recipe",
+            // "Orange Barley Chicken | Taste of Home".
+            text = text.replace(Regex("\\s+recipe$", RegexOption.IGNORE_CASE), "")
+                .split(" | ", " \u2013 ", " \u2014 ").first().trim()
+            if (text.length < 8) continue
+            out.putIfAbsent(resolved, DishLink(text, resolved))
+        }
+        return out.values.toList().take(24)
+    }
+}
+
 /** Files a parsed web recipe into the library, photo downloaded when we have one. Returns the new id or -1. */
 suspend fun insertWebRecipe(db: AppDatabase, context: Context, parsed: ParsedWebRecipe, sourceUrl: String): Long =
     withContext(Dispatchers.IO) {
