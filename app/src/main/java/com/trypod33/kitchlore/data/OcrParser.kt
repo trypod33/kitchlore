@@ -24,6 +24,9 @@ data class ParsedRecipe(
     val cookTimeMinutes: Int? = null,
     val ingredients: List<ParsedIngredient> = emptyList(),
     val steps: List<ParsedStep> = emptyList(),
+    // Tips, storage lines, make-ahead text: the extra material a card or a
+    // cookbook page carries below the recipe, joined with newlines.
+    val notes: String? = null,
 )
 
 object OcrParser {
@@ -130,6 +133,103 @@ object OcrParser {
     // Side sections that share a column with the recipe body ("Tips:",
     // "Good served with:"). A body block stops when one of these appears,
     // so their prose never rides into the ingredients or the steps.
+    // A standalone section header for the extra material below a recipe:
+    // "Notes:", "Tips:", "Storage:", "To Store:". The text under it travels
+    // into the recipe's notes instead of being dropped as noise.
+    private val NOTE_HEADER_RE = Regex(
+        "^(?i)(notes?|tips?|storage|to store|make ahead|make-ahead|hints?|variations?|serving suggestions?)\\s*:?\\s*$",
+    )
+    private val NOTE_INLINE_RE = Regex(
+        "^(?i)(notes?|tips?|make ahead|make-ahead|to store|storage)\\s*[:\\-]\\s*(.+)$",
+    )
+
+    /**
+     * A sub-recipe header inside the ingredient list or the directions:
+     * "Sauce:", "For the glaze,", "TOPPING:". Cards break a component out
+     * from the main recipe this way, and its amounts and steps belong to
+     * the recipe too, labeled "For the sauce:" so nothing is lost.
+     */
+    private val SUB_RECIPE_RE = Regex(
+        "^(?i)(?:for\\s+the\\s+|for\\s+)?(sauce|topping|glaze|frosting|icing|filling|dressing|marinade|gravy|syrup|streusel|crumb topping|crust|batter|ganache|salsa|pesto|vinaigrette|coating|dip|drizzle|caramel|compote)\\b(.*)$",
+    )
+
+    private fun subRecipeLabel(line: String): String? {
+        val t = line.trim()
+        if (t.isEmpty() || t.length > 45) return null
+        if (LEADING_QTY_RE.containsMatchIn(t) || LEADING_QTY_ALT_RE.containsMatchIn(t)) return null
+        if (t.split(Regex("\\s+")).size > 5) return null
+        val m = SUB_RECIPE_RE.find(t) ?: return null
+        // A real ingredient never reads as a bare component name: "Sauce:"
+        // and "For the glaze," do. Require a colon, an all-caps line, or
+        // the "for the" shape.
+        val bare = m.groupValues[2].isBlank()
+        if (!(t.contains(":") || (bare && t == t.uppercase()) ||
+                Regex("^(?i)for\\s+the\\s+").containsMatchIn(t))
+        ) return null
+        return m.groupValues[1].lowercase().replace(Regex("\\s+"), " ")
+    }
+
+    /**
+     * Removes note material from a line list and returns the body lines.
+     * Notes land in [out]: a standalone "Notes:" / "Tips:" / "To store:"
+     * header with its prose, and inline "Note: ..." / "Tips: ..." lines.
+     * Prose after the header stops at an ingredients or directions header,
+     * a nutrition footer, or an amount-led line.
+     */
+    private fun pullNotes(src: List<String>, out: MutableList<String>): List<String> {
+        val body = mutableListOf<String>()
+        var inNotes = false
+        var collected = 0
+        for (raw in src) {
+            val l = OcrLexicon.fixLine(raw.trim())
+            if (l.isEmpty()) continue
+            when {
+                NOTE_HEADER_RE.containsMatchIn(l) -> {
+                    inNotes = true
+                    collected = 0
+                }
+                inNotes -> {
+                    val stop = isIngHeader(l) || isStepHeader(l) || NUTRITION_RE.containsMatchIn(l) ||
+                        LEADING_QTY_RE.containsMatchIn(l) || LEADING_QTY_ALT_RE.containsMatchIn(l)
+                    if (stop || collected >= 10) {
+                        inNotes = false
+                        body.add(l)
+                    } else {
+                        out.add(l)
+                        collected++
+                    }
+                }
+                else -> {
+                    noteText(l)?.let { out.add(it) } ?: body.add(l)
+                }
+            }
+        }
+        return body
+    }
+
+    /**
+     * A step line collected right after a sub-recipe header ("Sauce:",
+     * "For the glaze,") keeps that label: "For the Sauce: In a saucepan,
+     * combine..." A numbered line has its number stripped first so the
+     * label sits where a reader sees it.
+     */
+    private fun labeledStep(l: String, sub: String?): String {
+        if (sub == null) return l
+        // Numbered lines keep their text: parseSteps owns the numbers, and a
+        // label glued in front of one would strand the number.
+        if (STEP_NUM_RE.containsMatchIn(l)) return l
+        val stripped = stripStepPrefix(l).trim()
+        return subMarker(sub) + " " + stripped
+    }
+
+    private fun subMarker(label: String) =
+        "For the " + label.replaceFirstChar { it.uppercaseChar() } + ":"
+
+    private fun noteText(l: String): String? {
+        NOTE_INLINE_RE.find(l.trim())?.let { return it.groupValues[2].trim() }
+        return null
+    }
+
     private fun isNoiseSectionHeader(line: String): Boolean {
         val l = headerKey(line)
         return l in setOf(
@@ -188,6 +288,8 @@ object OcrParser {
         val title: String = "",
         val ingredients: String = "",
         val steps: String = "",
+        /** OTHER-labeled text (notes, tips, storage): mined for the notes field, never dropped. */
+        val other: String = "",
     )
 
     data class OcrLineBox(
@@ -277,11 +379,21 @@ object OcrParser {
         // Character-level cleanup first (recognizer garbles like "SMOCTHIE"
         // for SMOOTHIE), then amounts the card's tight wrapping orphaned onto
         // their own line are rejoined to the unit line below them.
-        val lines = srcLines.map { it.trim() }
+        val rawLines = srcLines.map { it.trim() }
             .filter { it.isNotEmpty() }
             .map { OcrLexicon.fixLine(it) }
             .let { rejoinOrphanAmounts(it) }
             .let { joinHyphenLines(it) }
+        // Notes, tips and storage text travel into the recipe's notes field
+        // instead of being dropped as noise: a "Notes:" section, a
+        // "Note: ..." line, "Tips:". Sub-recipe headers ("Sauce:", "For the
+        // glaze,") stay in the body; they mark where a component breaks out
+        // of the main recipe, and their lines are labeled on the way in.
+        val scannedNotes = mutableListOf<String>()
+        val lines = pullNotes(srcLines, scannedNotes)
+        regions?.other?.takeIf { it.isNotBlank() }?.let { other ->
+            pullNotes(other.split("\n"), scannedNotes)
+        }
         if (lines.isEmpty() && regions == null) return ParsedRecipe("(untitled)")
 
         val servings =
@@ -395,7 +507,9 @@ object OcrParser {
                         )
                     )
                 }
+                var ingSub: String? = null
                 ingLines.forEach { l ->
+                    subRecipeLabel(l)?.let { ingSub = it; return@forEach }
                     if (isIngredientNoise(l)) return@forEach
                     val prev = ingredients.lastOrNull()
                     if (prev != null && isContinuation(l, prev)) {
@@ -406,6 +520,11 @@ object OcrParser {
                             unit = prev.unit,
                         )
                     } else {
+                        if (ingSub != null) {
+                            val m = subMarker(ingSub!!)
+                            ingredients.add(ParsedIngredient(name = m, rawText = m))
+                            ingSub = null
+                        }
                         ingredients.add(parseIngredientLine(l, rules))
                     }
                 }
@@ -414,12 +533,19 @@ object OcrParser {
                 // is that step's continuation, not an ingredient the header
                 // match ran past; only a measurement line after a CLOSED step
                 // is dropped here.
-                val stepJoined = joinHyphenLines(layout.second.map { OcrLexicon.fixLine(it.trim()) })
+                val stepRegionNotes = mutableListOf<String>()
+                val stepBody = pullNotes(layout.second.map { OcrLexicon.fixLine(it.trim()) }, stepRegionNotes)
+                scannedNotes += stepRegionNotes
+                val stepJoined = joinHyphenLines(stepBody)
                 val stepLines = mutableListOf<String>()
                 var prevOpen = false
                 var sawNumbered = false
+                var stepSub: String? = null
                 for (l in stepJoined) {
                     if (NUTRITION_RE.containsMatchIn(l)) continue
+                    subRecipeLabel(l)?.let { stepSub = it; continue }
+                    val sub = stepSub
+                    stepSub = null
                     if (STEP_NUM_RE.containsMatchIn(l)) {
                         sawNumbered = true
                         stepLines.add(l)
@@ -435,12 +561,12 @@ object OcrParser {
                         if (stepLines.isNotEmpty()) {
                             stepLines[stepLines.size - 1] = (stepLines.last() + " " + l).trim()
                         } else {
-                            stepLines.add(l)
+                            stepLines.add(labeledStep(l, sub))
                         }
                         continue
                     }
                     if (!isMeasurementLine(l) || looksLikeStep(l) || hasStepVerb(l) || prevOpen) {
-                        stepLines.add(l)
+                        stepLines.add(labeledStep(l, sub))
                         prevOpen = !SENTENCE_END_RE.containsMatchIn(l.trimEnd())
                     }
                 }
@@ -469,13 +595,20 @@ object OcrParser {
                     // oz.) cream cheese"): that is an ingredient the header
                     // match ran past, not an instruction.
                     lines.subList(stepIdx + 1, lines.size).filter { l ->
-                        !isMeasurementLine(l) || looksLikeStep(l) || hasStepVerb(l)
+                        // A line that opens with "3 " or "Step 2:" is a step
+                        // by its number alone ("3 Dust with powdered sugar."
+                        // carries no step verb but is not an ingredient).
+                        STEP_NUM_RE.containsMatchIn(l) ||
+                            Regex("^\\s*(?:step\\s*)?\\d{1,2}\\s+[A-Za-z]").containsMatchIn(l) ||
+                            !isMeasurementLine(l) || looksLikeStep(l) || hasStepVerb(l)
                     }
                 } else {
                     lines.subList(softEnd, lines.size)
                         .filter { looksLikeStep(it) && !isIngredientNoise(it) }
                 }
+                var ingSub: String? = null
                 ingLines.forEach { l ->
+                    subRecipeLabel(l)?.let { ingSub = it; return@forEach }
                     if (isIngredientNoise(l)) return@forEach
                     val prev = ingredients.lastOrNull()
                     if (prev != null && isContinuation(l, prev)) {
@@ -486,10 +619,28 @@ object OcrParser {
                             unit = prev.unit,
                         )
                     } else {
+                        if (ingSub != null) {
+                            val m = subMarker(ingSub!!)
+                            ingredients.add(ParsedIngredient(name = m, rawText = m))
+                            ingSub = null
+                        }
                         ingredients.add(parseIngredientLine(l, rules))
                     }
                 }
-                steps.addAll(parseSteps(stepLines))
+                // Sub-recipe headers inside the directions ("Sauce:",
+                // "For the glaze,") label the steps that follow them.
+                var stepSub: String? = null
+                val labeledSteps = mutableListOf<String>()
+                for (l in stepLines) {
+                    val sub = subRecipeLabel(l)
+                    if (sub != null) {
+                        stepSub = sub
+                        continue
+                    }
+                    labeledSteps.add(labeledStep(l, stepSub))
+                    stepSub = null
+                }
+                steps.addAll(parseSteps(labeledSteps))
                 if (stepIdx < 0 && !layoutFromRegions) {
                     // The ingredient block ended at the first step-shaped
                     // line; the measurement shape signal is the backstop for
@@ -565,6 +716,7 @@ object OcrParser {
             cookTimeMinutes = cook,
             ingredients = ingredients.filter { it.name.isNotBlank() || it.rawText.isNotBlank() },
             steps = steps.filter { it.instructionText.isNotBlank() },
+            notes = scannedNotes.joinToString("\n").trim().takeIf { it.isNotEmpty() },
         )
     }
 
@@ -1162,7 +1314,10 @@ object OcrParser {
         // cup."). Prose after prose ("creamy, delicious...") still drops.
         val prevRealInstruction = prev != null &&
             (hasStepVerb(prev.instructionText) || verbStart(prev.instructionText))
-        if (isStepProse(text) && !forceJoin && !trustRegion &&
+        // A numbered line is a step by its number, prose-shaped or not
+        // ("3 Dust with powdered sugar." carries no step verb but is not
+        // a sentence someone wrote at the bottom of the card).
+        if (isStepProse(text) && !forceJoin && !trustRegion && !hasNum &&
             !(prevOpen && (fragmentStart || prevRealInstruction))
         ) return
         if (!startsNew && prev != null) {

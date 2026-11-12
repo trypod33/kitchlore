@@ -303,6 +303,8 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
     var previewFailed by remember { mutableStateOf(false) }
     var enriched by remember { mutableStateOf<Map<String, EnrichedHit>>(emptyMap()) }
     var enrichJob by remember { mutableStateOf<Job?>(null) }
+    // "Naming the dishes: 4 of 12 read" while the naming passes run.
+    var namingProgress by remember { mutableStateOf<String?>(null) }
     var roundupUrl by remember { mutableStateOf<String?>(null) }
 
     /** Puts recipes first, dish-bearing roundups next, plain articles last. */
@@ -378,22 +380,53 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
             loading = false
             // Read each result's own page so the cards can name the dish.
             // One page at a time, top results first; cards update as reads land.
-            enrichJob = scope.launch {
-                for (hit in web.take(12)) {
-                    if (enriched.containsKey(hit.url)) continue
-                    val html = WebPageReader.read(context, hit.url)
-                    val parsed = withContext(Dispatchers.IO) { html?.let { HtmlRecipeParser.parse(it) } }
-                    val isRecipe = parsed != null &&
-                        (parsed.ingredients.isNotEmpty() || parsed.steps.isNotEmpty())
-                    val dishes = if (isRecipe || html == null) {
-                        emptyList()
-                    } else {
-                        withContext(Dispatchers.IO) { RoundupMiner.mine(html, hit.url) }
-                    }
-                    if (enriched.containsKey(hit.url)) continue
-                    enriched = enriched + (hit.url to EnrichedHit(parsed, isRecipe, dishes))
-                    resortHits()
+            suspend fun applyEnrichment(hit: KeylessSearch.Result, html: String?, overwrite: Boolean = false) {
+                if (!overwrite && enriched.containsKey(hit.url)) return
+                val parsed = withContext(Dispatchers.IO) { html?.let { HtmlRecipeParser.parse(it) } }
+                val isRecipe = parsed != null &&
+                    (parsed.ingredients.isNotEmpty() || parsed.steps.isNotEmpty())
+                val dishes = if (isRecipe || html == null) {
+                    emptyList()
+                } else {
+                    withContext(Dispatchers.IO) { RoundupMiner.mine(html, hit.url) }
                 }
+                val fresh = enriched - hit.url + (hit.url to EnrichedHit(parsed, isRecipe, dishes))
+                enriched = fresh
+                resortHits()
+            }
+            enrichJob = scope.launch {
+                // Pass 1 reads every result the fast way (plain HTTP) so the
+                // naming never queues behind a slow page, and one bad page
+                // cannot stop the rest. Pass 2 re-reads only the pages the
+                // fast way could not name (the big recipe sites that refuse
+                // plain callers) with the full read, top results first.
+                val top = web.take(12)
+                var done = 0
+                for (hit in top) {
+                    if (enriched.containsKey(hit.url)) { done++; continue }
+                    namingProgress = "Naming the dishes: ${done + 1} of ${top.size} read"
+                    try {
+                        val html = WebPageReader.readPlain(hit.url)
+                        applyEnrichment(hit, html)
+                    } catch (t: Throwable) {
+                        // Keep the card; pass 2 may still name it.
+                    }
+                    done++
+                }
+                val stubborn = top.filter { hit ->
+                    val e = enriched[hit.url]
+                    e == null || (!e.isRecipe && e.dishes.isEmpty())
+                }.take(6)
+                for (hit in stubborn) {
+                    namingProgress = "Naming the dishes: reading the stubborn pages (${done} of ${top.size} named)"
+                    try {
+                        val html = WebPageReader.read(context, hit.url)
+                        applyEnrichment(hit, html, overwrite = true)
+                    } catch (t: Throwable) {
+                        // Still keep the card: it taps through to the preview.
+                    }
+                }
+                namingProgress = null
             }
         }
     }
@@ -518,6 +551,9 @@ fun RecipeHuntRoute(db: AppDatabase, onBack: () -> Unit, onOpen: (Long) -> Unit,
             }
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        namingProgress?.let {
+            Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         message?.let {
             Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

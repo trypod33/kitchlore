@@ -36,6 +36,15 @@ object WebPageReader {
         return webFetch(context, url, timeoutMs)
     }
 
+    /**
+     * Plain HTTP only, no hidden-browser fallback. The hunt's first naming
+     * pass uses this so twelve fast reads never queue behind a slow WebView
+     * page; pages that refuse plain callers come back null and are retried
+     * with the full read in pass 2.
+     */
+    suspend fun readPlain(url: String): String? =
+        withContext(Dispatchers.IO) { fetchPage(url) }.takeIf { looksLikePage(it) }
+
     private fun findActivity(c: Context): Activity? {
         var ctx: Context = c
         while (ctx is ContextWrapper) {

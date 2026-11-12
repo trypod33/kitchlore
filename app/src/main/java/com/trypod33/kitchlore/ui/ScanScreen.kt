@@ -616,15 +616,18 @@ private fun runOcr(
                             val title = StringBuilder()
                             val ing = StringBuilder()
                             val steps = StringBuilder()
-                            for (b in group) when (ls[regionBlocks.indexOf(b)]) {
+                            val other = StringBuilder()
+                        for (b in group) when (ls[regionBlocks.indexOf(b)]) {
                                 RegionKind.TITLE -> title.append(b.text).append('\n')
                                 RegionKind.INGREDIENTS -> ing.append(b.text).append('\n')
                                 RegionKind.STEPS -> steps.append(b.text).append('\n')
-                                RegionKind.OTHER -> {}
+                                // Notes, tips and storage text live in OTHER;
+                                // the parser mines it for the notes field.
+                                RegionKind.OTHER -> other.append(b.text).append('\n')
                             }
                             OcrParser.parse(
                                 visionText.text, blocks, rules, boxes,
-                                regions = OcrParser.Regions(title.toString(), ing.toString(), steps.toString()),
+                                regions = OcrParser.Regions(title.toString(), ing.toString(), steps.toString(), other.toString()),
                             )
                         }
                     } ?: listOf(OcrParser.parse(visionText.text, blocks, rules, boxes))
@@ -858,6 +861,15 @@ private fun mergeRecipes(pages: List<ParsedRecipe>): ParsedRecipe {
             }
         }
     }
+    // Notes and tips from every scanned page carry through the merge;
+    // near-duplicates from facing pages are dropped by normalized text.
+    val notes = mutableListOf<String>()
+    pages.forEach { page ->
+        page.notes?.split("\n")?.forEach { n ->
+            val t = n.trim()
+            if (t.isNotEmpty() && notes.none { normLine(it) == normLine(t) }) notes.add(t)
+        }
+    }
     return ParsedRecipe(
         title = title,
         baseServings = base.baseServings,
@@ -865,5 +877,6 @@ private fun mergeRecipes(pages: List<ParsedRecipe>): ParsedRecipe {
         cookTimeMinutes = base.cookTimeMinutes ?: pages.firstNotNullOfOrNull { it.cookTimeMinutes },
         ingredients = ingredients,
         steps = steps,
+        notes = notes.joinToString("\n").takeIf { it.isNotBlank() },
     )
 }

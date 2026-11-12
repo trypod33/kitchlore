@@ -60,6 +60,8 @@ data class ParsedWebRecipe(
     val yieldServings: Int? = null,
     val totalMinutes: Int? = null,
     val imageUrl: String? = null,
+    // The page's own recipeNotes / tips, kept so nothing on the page is lost.
+    val notes: List<String> = emptyList(),
 )
 
 object HtmlRecipeParser {
@@ -134,8 +136,20 @@ object HtmlRecipeParser {
         val servings = o.optString("recipeYield").takeIf { it.isNotBlank() }?.let { Regex("\\d+").find(it)?.value?.toIntOrNull() }
         val minutes = isoDurationToMinutes(o.optString("totalTime"))
         val image = extractImage(o.opt("image"))
+        // The page's own tips and storage notes (recipeNotes in the JSON-LD);
+        // they ride into the saved recipe instead of vanishing.
+        val noteLines = mutableListOf<String>()
+        for (key in listOf("recipeNotes", "notes")) {
+            when (val rn = o.opt(key)) {
+                is String -> rn.trim().takeIf { it.isNotBlank() }?.let { noteLines.add(it.trim()) }
+                is JSONArray -> for (i in 0 until rn.length()) {
+                    rn.optString(i).trim().takeIf { it.isNotBlank() }?.let { noteLines.add(it) }
+                }
+                else -> {}
+            }
+        }
         if (title == null && ings.isEmpty() && steps.isEmpty()) return null
-        return ParsedWebRecipe(title, ings, steps, servings, minutes, image)
+        return ParsedWebRecipe(title, ings, steps, servings, minutes, image, noteLines)
     }
 
     private fun collectInstructions(arr: JSONArray, out: MutableList<String>) {
@@ -439,6 +453,8 @@ suspend fun insertWebRecipe(db: AppDatabase, context: Context, parsed: ParsedWeb
                 baseServings = parsed.yieldServings ?: 4,
                 sourceType = "web",
                 sourceNote = host,
+                notes = parsed.notes.map { it.trim() }.filter { it.isNotEmpty() }
+                    .joinToString("\n").takeIf { it.isNotBlank() },
                 originalImagePath = photoPath,
                 // Auto-tag from title + ingredients; the source stays in
                 // sourceType/sourceNote, where it belongs.

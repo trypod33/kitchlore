@@ -76,6 +76,7 @@ fun ReviewImportScreen(
     var steps by remember {
         mutableStateOf(parsed.steps.map { it.instructionText }.ifEmpty { listOf("") })
     }
+    var notes by remember { mutableStateOf(parsed.notes ?: "") }
     var selecting by remember { mutableStateOf(false) }
     var selectedIng by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var selectedSteps by remember { mutableStateOf<Set<Int>>(emptySet()) }
@@ -296,6 +297,16 @@ fun ReviewImportScreen(
             Text("Add step")
         }
 
+        if (notes.isNotBlank() || parsed.notes != null) {
+            Text("Notes", fontSize = 18.sp, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+            OutlinedTextField(
+                value = notes,
+                onValueChange = { v -> notes = v },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                minLines = 2,
+            )
+        }
+
         saveError?.let {
             Text(
                 "Save failed: $it",
@@ -317,7 +328,7 @@ fun ReviewImportScreen(
                         if (dup != null) {
                             pendingDuplicate = dup
                         } else {
-                            saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
+                            saveReview(db, title, servings, ingredients, steps, notes, photo, sourceNote)
                             onSaved()
                         }
                     } catch (t: Throwable) {
@@ -335,7 +346,7 @@ fun ReviewImportScreen(
                             pendingDuplicate = null
                             scope.launch {
                                 try {
-                                    saveReview(db, title, servings, ingredients, steps, photo, sourceNote)
+                                    saveReview(db, title, servings, ingredients, steps, notes, photo, sourceNote)
                                     onSaved()
                                 } catch (t: Throwable) {
                                     saveError = t.message ?: t.toString()
@@ -364,6 +375,7 @@ private suspend fun saveReview(
     servings: String,
     ingredients: List<String>,
     steps: List<String>,
+    notes: String,
     photoPath: String?,
     sourceNote: String,
 ) {
@@ -371,6 +383,7 @@ private suspend fun saveReview(
     val rid = db.recipeDao().insert(
         Recipe(
             title = title.ifBlank { "(untitled)" },
+            notes = notes.trim().takeIf { it.isNotBlank() },
             baseServings = servings.toIntOrNull()?.coerceAtLeast(1) ?: 1,
             sourceType = "scan",
             sourceNote = sourceNote,
