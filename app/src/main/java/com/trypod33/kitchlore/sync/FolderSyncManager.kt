@@ -71,6 +71,18 @@ object FolderSyncManager {
         return map
     }
 
+    // The picked folder can live on the phone's own storage, where the media
+    // scanner would index every recipe photo into the picture library. A
+    // .nomedia marker file in the folder keeps the directory out of gallery
+    // scans without touching the photos themselves.
+    private fun ensureNoMedia(folder: DocumentFile, children: Map<String, DocumentFile>) {
+        if (children.keys.any { it.equals(".nomedia", ignoreCase = true) }) return
+        runCatching {
+            val doc = folder.createFile("application/octet-stream", ".nomedia")
+            if (doc != null && !(doc.name ?: "").startsWith(".")) doc.delete()
+        }
+    }
+
     private suspend fun exportTo(
         folder: DocumentFile,
         context: Context,
@@ -80,6 +92,7 @@ object FolderSyncManager {
         onProgress("Backing up to the picked folder")
         val recipes = db.recipeDao().getAllRecipesOnce()
         val children = childMap(folder)
+        ensureNoMedia(folder, children)
 
         // Upload photos first so the library file can record the names the
         // folder actually gave them.
