@@ -15,6 +15,9 @@ interface StepDao {
     @Query("SELECT * FROM steps WHERE recipeId = :recipeId ORDER BY stepNumber ASC")
     fun getStepsForRecipe(recipeId: Long): Flow<List<Step>>
 
+    @Query("SELECT * FROM steps WHERE recipeId = :recipeId ORDER BY stepNumber ASC")
+    suspend fun getStepsForRecipeOnce(recipeId: Long): List<Step>
+
     @Query("DELETE FROM steps WHERE recipeId = :recipeId")
     suspend fun deleteAllForRecipe(recipeId: Long)
 }

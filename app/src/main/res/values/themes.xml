@@ -4,4 +4,10 @@
         <item name="android:colorBackground">@color/kitchlore_background</item>
         <item name="android:statusBarColor">@color/kitchlore_primary</item>
     </style>
+
+    <!-- Cold-start splash: cream canvas with the cookbook icon centered,
+         shown by the system while the process spins up. -->
+    <style name="Theme.Kitchlore.Splash">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
 </resources>

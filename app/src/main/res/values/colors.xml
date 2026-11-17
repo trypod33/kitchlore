@@ -2,4 +2,5 @@
 <resources>
     <color name="kitchlore_primary">#C9622E</color>
     <color name="kitchlore_background">#FFF8F1</color>
+    <color name="kitchlore_icon_bg">#FDECD4</color>
 </resources>

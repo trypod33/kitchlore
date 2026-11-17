@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Kitchlore" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorBackground">@color/kitchlore_background</item>
+        <item name="android:statusBarColor">@color/kitchlore_primary</item>
+    </style>
+
+    <!-- Android 12+ system splash uses these windowSplashScreen* attrs. -->
+    <style name="Theme.Kitchlore.Splash">
+        <item name="android:windowBackground">@color/kitchlore_icon_bg</item>
+        <item name="android:windowSplashScreenBackground">@color/kitchlore_icon_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenAnimationDuration">400</item>
+    </style>
+</resources>
